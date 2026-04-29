@@ -15,6 +15,7 @@ import zen_garden.default_config as default_config
 from .optimization_setup import OptimizationSetup
 from .postprocess.postprocess import Postprocess
 from .utils import InputDataChecks, ScenarioUtils, StringUtils, setup_logger
+from .model.investment_optimization import extract_and_print_market_prices
 
 # we setup the logger here
 setup_logger()
@@ -144,6 +145,7 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
                 optimization_setup.scaling.analyze_numerics()
             # SOLVE THE OPTIMIZATION PROBLEM
             optimization_setup.solve()
+
             # break if infeasible
             if not optimization_setup.optimality:
                 # write IIS
@@ -155,6 +157,10 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
             if optimization_setup.solver.use_scaling:
                 optimization_setup.scaling.re_scale()
             # save new capacity additions and cumulative carbon emissions
+
+            # Print market prices (duals) for later investment optimization
+            extract_and_print_market_prices(optimization_setup)
+
             # for next time step
             if optimization_setup.system.use_rolling_horizon:
                 optimization_setup.add_results_of_optimization_step(step)
