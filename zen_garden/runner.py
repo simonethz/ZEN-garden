@@ -13,6 +13,7 @@ from pathlib import Path
 import zen_garden.default_config as default_config
 from zen_garden.plugin_system.loader import register_plugins
 
+from .investment_decisions import print_average_shadow_prices
 from .optimization_setup import OptimizationSetup
 from .postprocess.postprocess import Postprocess
 from .utils import InputDataChecks, ScenarioUtils, StringUtils, setup_logger
@@ -158,9 +159,10 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
             if optimization_setup.solver.use_scaling:
                 optimization_setup.scaling.re_scale()
 
-            # profitability analysis and optimization for investment decisions
-            if optimization_setup.system.use_rolling_horizon:
-                profitability_analysis(optimization_setup)
+            # extract and print shadow prices
+            print_average_shadow_prices(optimization_setup)
+
+
 
 
             # save new capacity additions and cumulative carbon emissions
