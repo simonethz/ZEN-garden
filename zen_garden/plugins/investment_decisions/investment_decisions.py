@@ -70,6 +70,11 @@ def extract_shadow_prices_full_ts(optimization_setup):
     annuity_per_op = op2year.reindex(df_duals.columns).map(annuity)
     df_duals = df_duals.div(annuity_per_op, axis=1)
 
+    logging.info(
+        "\n--- Normalized shadow prices per aggregated operational time step ---\n"
+        f"{df_duals}\n"
+    )
+
     # map aggregated operation time steps onto the underlying base time steps
     sequence = np.asarray(time_steps.sequence_time_steps_operation)
     full_ts = df_duals.reindex(columns=sequence)
@@ -99,6 +104,10 @@ def extract_average_shadow_prices(optimization_setup):
         return None
 
     return full_ts.mean(axis=1).to_frame(name="average_shadow_price")
+
+
+# CAPEX + OPEX
+
 
 
 
