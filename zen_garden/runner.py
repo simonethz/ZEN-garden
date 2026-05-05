@@ -11,9 +11,9 @@ import warnings
 from pathlib import Path
 
 import zen_garden.default_config as default_config
+from zen_garden.plugin_system.events import Event, EventPublisher
 from zen_garden.plugin_system.loader import register_plugins
 
-from .investment_decisions import print_average_shadow_prices
 from .optimization_setup import OptimizationSetup
 from .postprocess.postprocess import Postprocess
 from .utils import InputDataChecks, ScenarioUtils, StringUtils, setup_logger
@@ -160,7 +160,7 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
                 optimization_setup.scaling.re_scale()
 
             # extract and print shadow prices
-            print_average_shadow_prices(optimization_setup)
+            EventPublisher.trigger(Event.event_after_optimization, optimization_setup)
 
 
 

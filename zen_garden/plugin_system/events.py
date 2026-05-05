@@ -36,6 +36,7 @@ class Event(Enum):
 
     test_event1 = auto()
     test_event2 = auto()
+    event_after_optimization = auto()
 
 
 class EventPublisher:
