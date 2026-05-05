@@ -6,7 +6,7 @@ import pandas as pd
 
 from zen_garden import Results, run
 
-DATASET_ROOT = Path("C:/Crystal-Ball-small/data")
+DATASET_ROOT = Path("D:/Students/ssambale_jwiegner/Crystal-Ball/data")
 CONFIG_PATH = DATASET_ROOT / "config.json"
 DATASET_PATH = DATASET_ROOT / "Crystal_Ball"
 OUTPUT_PATH = DATASET_ROOT / "outputs" / "Crystal_Ball"
