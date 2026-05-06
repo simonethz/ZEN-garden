@@ -365,4 +365,72 @@ def calculate_revenue(
     return revenue
 
 
+def get_specific_capex(optimization_setup) -> dict[str, pd.Series]:
+    """Specific CAPEX per GW (or GWh) for new capacity additions.
 
+    Pulls the linear specific-capex coefficients used by the optimizer when
+    adding new capacity, restricted to the most recent year in
+    ``set_time_steps_yearly``:
+
+    - ``capex_specific_conversion`` — money per GW for conversion technologies
+      modeled with a linear capex (i.e. those in ``set_capex_linear``;
+      PWA-capex technologies are not represented here).
+    - ``capex_specific_storage`` — money per GW for storage power capacity and
+      money per GWh for storage energy capacity. The unit is implied by the
+      ``set_capacity_types`` index level (typically "power" / "energy").
+
+    Transport technologies are intentionally excluded since they are indexed
+    by edges rather than nodes.
+
+    Args:
+        optimization_setup: An ``OptimizationSetup`` whose parameters have
+            been initialized.
+
+    Returns:
+        dict with keys ``"conversion"`` and ``"storage"``. Each value is a
+        ``pandas.Series`` indexed by the parameter's location-and-tech levels
+        for the latest year. Keys are omitted if the corresponding parameter
+        is not present in the model.
+    """
+    sets = optimization_setup.sets
+    parameters = optimization_setup.parameters
+    latest_year = max(sets["set_time_steps_yearly"])
+
+    output: dict[str, pd.Series] = {}
+
+    if hasattr(parameters, "capex_specific_conversion"):
+        conv = (
+            parameters.capex_specific_conversion
+            .sel(set_time_steps_yearly=latest_year)
+            .to_series()
+            .dropna()
+        )
+        conv.name = "capex_specific_conversion"
+        output["conversion"] = conv
+
+    if hasattr(parameters, "capex_specific_storage"):
+        stor = (
+            parameters.capex_specific_storage
+            .sel(set_time_steps_yearly=latest_year)
+            .to_series()
+            .dropna()
+        )
+        stor.name = "capex_specific_storage"
+        output["storage"] = stor
+
+    logging.info(
+        f"\n--- Specific CAPEX for new capacity additions, year {latest_year} ---"
+    )
+    if "conversion" in output:
+        logging.info(
+            "\nConversion technologies (money per GW, linear-capex techs only):\n"
+            f"{output['conversion']}\n"
+        )
+    if "storage" in output:
+        logging.info(
+            "\nStorage technologies "
+            "(money per GW for 'power', per GWh for 'energy'):\n"
+            f"{output['storage']}\n"
+        )
+
+    return output
