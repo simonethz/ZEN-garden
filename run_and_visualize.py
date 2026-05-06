@@ -6,7 +6,30 @@ import pandas as pd
 
 from zen_garden import Results, run
 
-DATASET_ROOT = Path("D:/Students/ssambale_jwiegner/Crystal-Ball/data")
+# Candidate dataset roots, tried in order. The first existing one wins, so the
+# script works on both the local and the remote machine without manual edits.
+DATASET_ROOT_CANDIDATES = (
+    Path("D:/Students/ssambale_jwiegner/Crystal-Ball/data"),  # remote
+    Path.home() / "C:\Crystal-Ball-small\data",        # local — adjust as needed
+)
+
+
+def get_dataset_root() -> Path:
+    """Return the first existing dataset root from ``DATASET_ROOT_CANDIDATES``.
+
+    Raises:
+        FileNotFoundError: if none of the candidate paths exists on this machine.
+    """
+    for candidate in DATASET_ROOT_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    tried = "\n  ".join(str(p) for p in DATASET_ROOT_CANDIDATES)
+    raise FileNotFoundError(
+        f"None of the configured dataset roots exist on this machine:\n  {tried}"
+    )
+
+
+DATASET_ROOT = get_dataset_root()
 CONFIG_PATH = DATASET_ROOT / "config.json"
 DATASET_PATH = DATASET_ROOT / "Crystal_Ball"
 OUTPUT_PATH = DATASET_ROOT / "outputs" / "Crystal_Ball"
