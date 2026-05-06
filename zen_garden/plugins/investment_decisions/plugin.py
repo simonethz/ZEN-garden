@@ -9,7 +9,7 @@ import logging
 
 from zen_garden.plugin_system.events import Event, EventPublisher
 from zen_garden.plugins.investment_decisions.investment_decisions import (
-    extract_average_shadow_prices,
+    extract_average_shadow_prices, calculate_revenue
 )
 
 config = {}
@@ -28,3 +28,11 @@ def print_average_shadow_prices(optimization_setup):
         logging.info(f"\n--- Average Shadow Prices ---\n{average_prices}\n")
     else:
         logging.warning("No average shadow prices available to print.")
+
+def call_and_print_revenue(optimization_setup):
+
+    revenue = calculate_revenue(optimization_setup)
+    if revenue is not None:
+        logging.info(f"\n--- Revenue ---\n{revenue}\n")
+    else:
+        logging.warning("No revenue available to print.")
