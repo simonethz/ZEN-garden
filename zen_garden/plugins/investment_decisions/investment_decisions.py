@@ -396,25 +396,24 @@ def get_specific_capex(optimization_setup) -> dict[str, pd.Series]:
     parameters = optimization_setup.parameters
     latest_year = max(sets["set_time_steps_yearly"])
 
+    def _select_year(param) -> pd.Series:
+        # parameter dim names get re-aliased (e.g. set_time_steps_yearly -> year);
+        # convert to a Series first and then filter on whichever year level exists.
+        series = param.to_series().dropna()
+        for level_name in ("set_time_steps_yearly", "year"):
+            if level_name in series.index.names:
+                return series.xs(latest_year, level=level_name)
+        return series
+
     output: dict[str, pd.Series] = {}
 
     if hasattr(parameters, "capex_specific_conversion"):
-        conv = (
-            parameters.capex_specific_conversion
-            .sel(set_time_steps_yearly=latest_year)
-            .to_series()
-            .dropna()
-        )
+        conv = _select_year(parameters.capex_specific_conversion)
         conv.name = "capex_specific_conversion"
         output["conversion"] = conv
 
     if hasattr(parameters, "capex_specific_storage"):
-        stor = (
-            parameters.capex_specific_storage
-            .sel(set_time_steps_yearly=latest_year)
-            .to_series()
-            .dropna()
-        )
+        stor = _select_year(parameters.capex_specific_storage)
         stor.name = "capex_specific_storage"
         output["storage"] = stor
 
