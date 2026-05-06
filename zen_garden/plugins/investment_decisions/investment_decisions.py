@@ -117,8 +117,11 @@ def get_lifetime(optimization_setup) -> pd.Series:
     """
     sets = optimization_setup.sets
     techs = list(sets["set_conversion_technologies"])
-    lifetime = pd.Series(optimization_setup.parameters.lifetime, name="lifetime")
-    lifetime.index.name = "set_technologies"
+    # parameters.lifetime is an xarray.DataArray indexed by set_technologies;
+    # to_series() preserves that index, unlike pd.Series(xarr, ...) which
+    # falls back to a positional integer index.
+    lifetime = optimization_setup.parameters.lifetime.to_series()
+    lifetime.name = "lifetime"
     return lifetime.reindex(techs)
 
 
@@ -335,7 +338,7 @@ def calculate_revenue(
 
     revenue = pd.Series(0.0, index=spec_prod.index, name="discounted_revenue")
     for (tech, carrier, node), prod in spec_prod.items():
-        if pd.isna(prod):
+        if pd.isna(prod) or pd.isna(lifetime.get(tech, np.nan)):
             continue
         tech_lifetime = int(lifetime[tech])
         n_steps = int(np.ceil(tech_lifetime / interval))
