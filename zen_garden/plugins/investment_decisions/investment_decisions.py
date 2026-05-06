@@ -336,6 +336,16 @@ def calculate_revenue(
     if spec_prod is None or prices is None or spec_prod.empty:
         return pd.Series(dtype=float, name="discounted_revenue")
 
+    logging.info(
+        "\n--- Revenue calculation inputs ---\n"
+        f"Discount rates per (tech, node):\n{discount_rate}\n\n"
+        f"Lifetimes per tech (years):\n{lifetime}\n\n"
+        f"Market value per (tech, node):\n{market_value}\n\n"
+        f"Specific yearly production "
+        f"per (tech, output_carrier, node), year={prev_year}:\n{spec_prod}\n\n"
+        f"Shadow prices per (tech, output_carrier, node) and year:\n{prices}\n"
+    )
+
     revenue = pd.Series(0.0, index=spec_prod.index, name="discounted_revenue")
     for (tech, carrier, node), prod in spec_prod.items():
         if pd.isna(prod) or pd.isna(lifetime.get(tech, np.nan)):
