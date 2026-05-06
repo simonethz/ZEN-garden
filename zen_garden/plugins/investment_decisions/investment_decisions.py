@@ -351,17 +351,15 @@ def calculate_revenue(
         if pd.isna(prod) or pd.isna(lifetime.get(tech, np.nan)):
             continue
         tech_lifetime = int(lifetime[tech])
-        n_steps = int(np.ceil(tech_lifetime / interval))
         r = float(discount_rate.loc[(tech, node)])
         mv = float(market_value.loc[(tech, node)])
         total = 0.0
-        for offset in range(n_steps):
-            year = min(investment_year + offset, last_year)
+        for year in range(tech_lifetime):
             try:
-                price = float(prices.loc[(tech, carrier, node), year])
+                price = float(prices.loc[(tech, carrier, node)])
             except KeyError:
                 price = 0.0
-            disc = (1 + r) ** (interval * offset)
+            disc = (1 + r) ** (year)
             total += capacity_addition_gw * prod * price * mv / disc
         revenue.loc[(tech, carrier, node)] = total
     return revenue
