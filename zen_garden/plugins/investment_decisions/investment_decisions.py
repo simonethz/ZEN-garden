@@ -143,73 +143,41 @@ def get_discount_rate(optimization_setup) -> pd.Series:
     return pd.Series(rate, index=idx, name="discount_rate")
 
 
-def get_market_value(optimization_setup, default: float = 0.35) -> pd.Series:
-    """Market value factor per (conversion technology, node).
+def get_specific_production(optimization_setup) -> pd.Series:
+    """Specific production per aggregated time step, per unit installed capacity.
 
-    Hardcoded to ``default`` (0.35) for now — replace this stub with a proper
-    lookup once tech-/node-specific market values are available.
-    """
-    sets = optimization_setup.sets
-    techs = list(sets["set_conversion_technologies"])
-    nodes = list(sets["set_nodes"])
-    idx = pd.MultiIndex.from_product(
-        [techs, nodes], names=["set_technologies", "set_nodes"]
-    )
-    return pd.Series(default, index=idx, name="market_value")
-
-
-def get_yearly_production(optimization_setup, year: int | None = None) -> pd.Series:
-    """Specific yearly production per unit installed capacity.
-
-    For each conversion technology, output carrier and node, returns the
-    yearly output (sum over operational time steps of
-    ``flow_conversion_output * time_steps_operation_duration``) divided by
-    the installed capacity in that year. The result is a per-GW-installed
-    full-load equivalent that can be multiplied by an arbitrary capacity
-    addition to estimate annual production.
-
-    Args:
-        optimization_setup: A solved ``OptimizationSetup``.
-        year: Year index in ``set_time_steps_yearly``. Defaults to the most
-            recent year solved in the optimization (the "previous year"
-            relative to any new investment).
+    For each conversion technology, output carrier, node and aggregated
+    operational time step, returns
+    ``flow_conversion_output / capacity`` where ``capacity`` is taken from
+    the same year the time step belongs to. This is a per-GW-installed
+    capacity-utilization signal at the resolution of the optimization's
+    aggregated operational time steps.
 
     Returns:
         pandas.Series indexed by
-        (``set_technologies``, ``set_output_carriers``, ``set_nodes``).
-        ``NaN`` where capacity is zero.
+        (``set_technologies``, ``set_output_carriers``, ``set_nodes``,
+        ``set_time_steps_operation``). ``NaN`` where capacity is zero.
     """
     sets = optimization_setup.sets
     techs = list(sets["set_conversion_technologies"])
-    if year is None:
-        year = max(sets["set_time_steps_yearly"])
-
     time_steps = optimization_setup.energy_system.time_steps
     op2year = pd.Series(time_steps.time_steps_operation2year)
-    durations = pd.Series(time_steps.time_steps_operation_duration)
-    op_steps_in_year = op2year[op2year == year].index
+    op_level = "set_time_steps_operation"
 
     flow = (
         optimization_setup.model.solution["flow_conversion_output"]
         .to_series()
         .dropna()
     )
-    op_level = "set_time_steps_operation"
-    flow = flow[flow.index.get_level_values(op_level).isin(op_steps_in_year)]
-    flow = flow.mul(flow.index.get_level_values(op_level).map(durations))
     flow = flow[
         flow.index.get_level_values("set_conversion_technologies").isin(techs)
     ]
-    yearly_prod = flow.groupby(
-        level=["set_conversion_technologies", "set_output_carriers", "set_nodes"]
-    ).sum()
-    yearly_prod.index.set_names(
-        ["set_technologies", "set_output_carriers", "set_nodes"], inplace=True
+    flow.index = flow.index.rename(
+        {"set_conversion_technologies": "set_technologies"}
     )
 
     capacity = (
         optimization_setup.model.solution["capacity"]
-        .sel(set_time_steps_yearly=year)
         .sum("set_capacity_types")
         .to_series()
         .dropna()
@@ -217,70 +185,110 @@ def get_yearly_production(optimization_setup, year: int | None = None) -> pd.Ser
     capacity = capacity[
         capacity.index.get_level_values("set_technologies").isin(techs)
     ]
-    capacity.index.set_names(["set_technologies", "set_nodes"], inplace=True)
+    capacity.index = capacity.index.rename({"set_location": "set_nodes"})
 
-    cap_aligned = capacity.reindex(
-        yearly_prod.index.droplevel("set_output_carriers")
+    flow_df = flow.to_frame("flow").reset_index()
+    flow_df["set_time_steps_yearly"] = flow_df[op_level].map(op2year)
+    cap_df = capacity.to_frame("capacity").reset_index()
+
+    merged = flow_df.merge(
+        cap_df,
+        on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
+        how="left",
     )
-    cap_aligned.index = yearly_prod.index
-    specific = yearly_prod.div(cap_aligned).replace([np.inf, -np.inf], np.nan)
-    specific.name = "specific_yearly_production"
-    return specific
+    merged["spec"] = (
+        (merged["flow"] / merged["capacity"])
+        .replace([np.inf, -np.inf], np.nan)
+    )
+    result = merged.set_index(
+        ["set_technologies", "set_output_carriers", "set_nodes", op_level]
+    )["spec"]
+    result.name = "specific_production"
+    return result
 
 
-def get_shadow_price(optimization_setup) -> pd.DataFrame | None:
-    """Yearly average shadow price for the output carriers of all conversion techs.
+def _extract_shadow_prices_per_op_step(optimization_setup) -> pd.Series | None:
+    """Per-aggregated-time-step normalized shadow price of the nodal energy balance.
 
-    Builds on ``extract_shadow_prices_full_ts`` (per-base-time-step
-    normalized duals of the nodal energy balance), groups them by
-    optimized year, and broadcasts each (carrier, node) price onto every
-    conversion technology that has that carrier as an output carrier.
+    Same normalization as ``extract_shadow_prices_full_ts`` (raw dual divided
+    by the operational time-step duration and by the per-year interval
+    weight), but stops before the base-time-step expansion.
 
     Returns:
-        pandas.DataFrame indexed by
-        (``set_technologies``, ``set_output_carriers``, ``set_nodes``) with
-        one column per year in ``set_time_steps_yearly`` holding the yearly
-        average normalized shadow price. ``None`` if duals are unavailable.
+        pandas.Series indexed by
+        (``set_carriers``, ``set_nodes``, ``set_time_steps_operation``), or
+        ``None`` if duals are unavailable.
     """
-    full_ts = extract_shadow_prices_full_ts(optimization_setup)
-    if full_ts is None:
+    model = optimization_setup.model
+    constraint = "constraint_nodal_energy_balance"
+    if constraint not in model.constraints:
+        logging.warning(
+            f"Constraint '{constraint}' not found in the model. "
+            "Cannot extract nodal energy balance duals."
+        )
+        return None
+    duals = model.constraints[constraint].dual
+    if duals is None:
+        logging.warning(
+            f"Duals for '{constraint}' are None. Make sure "
+            "`solver.save_duals` is enabled and the solver returned duals."
+        )
+        return None
+
+    time_steps = optimization_setup.energy_system.time_steps
+    durations = pd.Series(time_steps.time_steps_operation_duration)
+    op2year = pd.Series(time_steps.time_steps_operation2year)
+    annuity = _normalize_interval(optimization_setup)
+    op_level = "set_time_steps_operation"
+
+    series = duals.to_series().dropna()
+    ops = series.index.get_level_values(op_level)
+    series = series.div(ops.map(durations))
+    series = series.div(ops.map(op2year).map(annuity))
+    series.name = "shadow_price"
+    return series
+
+
+def get_shadow_price(optimization_setup) -> pd.Series | None:
+    """Per-aggregated-time-step shadow prices for output carriers of all conversion techs.
+
+    Broadcasts each ``(carrier, node, time_step_operation)`` normalized
+    shadow price onto every conversion technology whose set of output
+    carriers contains that carrier.
+
+    Returns:
+        pandas.Series indexed by
+        (``set_technologies``, ``set_output_carriers``, ``set_nodes``,
+        ``set_time_steps_operation``) with the per-hour shadow price, or
+        ``None`` if duals are unavailable.
+    """
+    series = _extract_shadow_prices_per_op_step(optimization_setup)
+    if series is None:
         return None
 
     sets = optimization_setup.sets
     techs = list(sets["set_conversion_technologies"])
     output_carriers_by_tech = sets["set_output_carriers"]
 
-    time_steps = optimization_setup.energy_system.time_steps
-    seq = np.asarray(time_steps.sequence_time_steps_operation)
-    op2year = pd.Series(time_steps.time_steps_operation2year)
-    base_year = pd.Series(seq).map(op2year)
-    base_year.index = full_ts.columns
-
-    # average per year per (carrier, node) -> wide frame indexed by (carrier, node)
-    yearly = full_ts.T.groupby(base_year).mean().T
-    yearly.columns.name = "year"
-
-    # broadcast each (carrier, node) price onto every (tech, output_carrier, node)
+    long = series.reset_index()
     tech_carrier = pd.DataFrame(
         [(t, c) for t in techs for c in output_carriers_by_tech[t]],
         columns=["set_technologies", "set_output_carriers"],
     )
-    yearly_long = yearly.reset_index().melt(
-        id_vars=yearly.index.names,
-        var_name="year",
-        value_name="shadow_price",
-    )
     merged = tech_carrier.merge(
-        yearly_long,
+        long,
         left_on="set_output_carriers",
         right_on="set_carriers",
         how="inner",
     )
-    return merged.pivot_table(
-        index=["set_technologies", "set_output_carriers", "set_nodes"],
-        columns="year",
-        values="shadow_price",
-    )
+    return merged.set_index(
+        [
+            "set_technologies",
+            "set_output_carriers",
+            "set_nodes",
+            "set_time_steps_operation",
+        ]
+    )["shadow_price"]
 
 
 def calculate_revenue(
@@ -293,20 +301,19 @@ def calculate_revenue(
     Per (conversion technology, output carrier, node), the formula is::
 
         revenue = capacity_addition_gw
-                  * specific_production(prev_year)
-                  * Σ_{offset=0..L-1} (
-                        shadow_price(year_y) * market_value
+                  * Σ_{offset=0..n_steps-1} Σ_{t in time_steps(eff_year)} (
+                        shadow_price[oc, node, t]
+                        * specific_production[tech, oc, node, t]
+                        * duration[t]
                         / (1 + r) ** (Δy * offset)
                     )
 
-    where ``Δy = system.interval_between_years``, ``L`` is the technology
-    lifetime in calendar years (rounded up to whole optimized years), and
-    ``year_y = min(investment_year + offset, last_horizon_year)`` — i.e. the
-    last available year's price is used once the lifetime extends past the
-    optimization horizon.
-
-    Specific production is taken from the most recent year solved in the
-    optimization (the "previous year") and held constant over the lifetime.
+    where ``Δy = system.interval_between_years``, ``n_steps =
+    ceil(lifetime / Δy)`` is the number of optimized-year increments
+    covered by the lifetime, and ``eff_year = min(investment_year + offset,
+    last_horizon_year)`` — i.e. the time steps and prices of the last
+    horizon year are reused (forward-filled) once the lifetime extends past
+    the optimization horizon.
 
     Args:
         optimization_setup: A solved ``OptimizationSetup``.
@@ -327,41 +334,55 @@ def calculate_revenue(
 
     discount_rate = get_discount_rate(optimization_setup)
     lifetime = get_lifetime(optimization_setup)
-    market_value = get_market_value(optimization_setup)
-
-    # "previous year" = the most recent year solved in the optimization
-    prev_year = last_year
-    spec_prod = get_yearly_production(optimization_setup, year=prev_year)
+    spec_prod = get_specific_production(optimization_setup)
     prices = get_shadow_price(optimization_setup)
     if spec_prod is None or prices is None or spec_prod.empty:
         return pd.Series(dtype=float, name="discounted_revenue")
+
+    time_steps = optimization_setup.energy_system.time_steps
+    durations = pd.Series(time_steps.time_steps_operation_duration)
+    op2year = pd.Series(time_steps.time_steps_operation2year)
+    op_steps_by_year = {
+        y: list(op2year[op2year == y].index) for y in horizon_years
+    }
 
     logging.info(
         "\n--- Revenue calculation inputs ---\n"
         f"Discount rates per (tech, node):\n{discount_rate}\n\n"
         f"Lifetimes per tech (years):\n{lifetime}\n\n"
-        f"Market value per (tech, node):\n{market_value}\n\n"
-        f"Specific yearly production "
-        f"per (tech, output_carrier, node), year={prev_year}:\n{spec_prod}\n\n"
-        f"Shadow prices per (tech, output_carrier, node) and year:\n{prices}\n"
+        f"Specific production per (tech, oc, node, time_step_op):\n"
+        f"{spec_prod}\n\n"
+        f"Shadow prices per (tech, oc, node, time_step_op):\n{prices}\n"
     )
 
-    revenue = pd.Series(0.0, index=spec_prod.index, name="discounted_revenue")
-    for (tech, carrier, node), prod in spec_prod.items():
-        if pd.isna(prod) or pd.isna(lifetime.get(tech, np.nan)):
+    # Build the (tech, output_carrier, node) groups from the specific-production
+    # index by dropping the time-step level.
+    op_level = "set_time_steps_operation"
+    group_index = (
+        spec_prod.index.droplevel(op_level).unique()
+    )
+
+    revenue = pd.Series(0.0, index=group_index, name="discounted_revenue")
+    for tech, carrier, node in group_index:
+        if pd.isna(lifetime.get(tech, np.nan)):
             continue
         tech_lifetime = int(lifetime[tech])
+        n_steps = int(np.ceil(tech_lifetime / interval))
         r = float(discount_rate.loc[(tech, node)])
-        mv = float(market_value.loc[(tech, node)])
         total = 0.0
-        for year in range(tech_lifetime):
-            try:
-                price = float(prices.loc[(tech, carrier, node)])
-            except KeyError:
-                price = 0.0
-            disc = (1 + r) ** (year)
-            total += capacity_addition_gw * prod * price * mv / disc
-        revenue.loc[(tech, carrier, node)] = total
+        for offset in range(n_steps):
+            eff_year = min(investment_year + offset, last_year)
+            disc = (1 + r) ** (interval * offset)
+            for t in op_steps_by_year.get(eff_year, []):
+                key = (tech, carrier, node, t)
+                if key not in spec_prod.index or key not in prices.index:
+                    continue
+                s = spec_prod.loc[key]
+                p = prices.loc[key]
+                if pd.isna(s) or pd.isna(p):
+                    continue
+                total += float(s) * float(p) * float(durations[t]) / disc
+        revenue.loc[(tech, carrier, node)] = capacity_addition_gw * total
     return revenue
 
 
