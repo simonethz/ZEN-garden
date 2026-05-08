@@ -144,14 +144,18 @@ def get_discount_rate(optimization_setup) -> pd.Series:
 
 
 def get_specific_production(optimization_setup) -> pd.Series:
-    """Specific production per aggregated time step, per unit installed capacity.
+    """Production per GW installed capacity per aggregated operational time step.
 
     For each conversion technology, output carrier, node and aggregated
-    operational time step, returns
-    ``flow_conversion_output / capacity`` where ``capacity`` is taken from
-    the same year the time step belongs to. This is a per-GW-installed
-    capacity-utilization signal at the resolution of the optimization's
-    aggregated operational time steps.
+    operational time step ``t``, returns::
+
+        flow_conversion_output[t] * time_steps_operation_duration[t]
+            / capacity[year(t)]
+
+    Units: energy per capacity (GWh/GW = h), i.e. full-load-equivalent
+    hours per GW for that time step. Summing the values for all time steps
+    of one optimized year therefore yields the yearly production per GW
+    (in hours of full-load equivalent / GWh per GW).
 
     Returns:
         pandas.Series indexed by
@@ -162,6 +166,7 @@ def get_specific_production(optimization_setup) -> pd.Series:
     techs = list(sets["set_conversion_technologies"])
     time_steps = optimization_setup.energy_system.time_steps
     op2year = pd.Series(time_steps.time_steps_operation2year)
+    durations = pd.Series(time_steps.time_steps_operation_duration)
     op_level = "set_time_steps_operation"
 
     flow = (
@@ -175,6 +180,9 @@ def get_specific_production(optimization_setup) -> pd.Series:
     flow.index = flow.index.rename(
         {"set_conversion_technologies": "set_technologies"}
     )
+    # weight each flow value by the duration of its aggregated time step
+    # (dimensional from [energy/time] to [energy] per time-step interval)
+    flow = flow.mul(flow.index.get_level_values(op_level).map(durations))
 
     capacity = (
         optimization_setup.model.solution["capacity"]
@@ -187,7 +195,7 @@ def get_specific_production(optimization_setup) -> pd.Series:
     ]
     capacity.index = capacity.index.rename({"set_location": "set_nodes"})
 
-    flow_df = flow.to_frame("flow").reset_index()
+    flow_df = flow.to_frame("flow_energy").reset_index()
     flow_df["set_time_steps_yearly"] = flow_df[op_level].map(op2year)
     cap_df = capacity.to_frame("capacity").reset_index()
 
@@ -197,13 +205,13 @@ def get_specific_production(optimization_setup) -> pd.Series:
         how="left",
     )
     merged["spec"] = (
-        (merged["flow"] / merged["capacity"])
+        (merged["flow_energy"] / merged["capacity"])
         .replace([np.inf, -np.inf], np.nan)
     )
     result = merged.set_index(
         ["set_technologies", "set_output_carriers", "set_nodes", op_level]
     )["spec"]
-    result.name = "specific_production"
+    result.name = "specific_production_per_gw"
     return result
 
 
@@ -304,16 +312,16 @@ def calculate_revenue(
                   * Σ_{offset=0..n_steps-1} Σ_{t in time_steps(eff_year)} (
                         shadow_price[oc, node, t]
                         * specific_production[tech, oc, node, t]
-                        * duration[t]
                         / (1 + r) ** (Δy * offset)
                     )
 
-    where ``Δy = system.interval_between_years``, ``n_steps =
-    ceil(lifetime / Δy)`` is the number of optimized-year increments
-    covered by the lifetime, and ``eff_year = min(investment_year + offset,
-    last_horizon_year)`` — i.e. the time steps and prices of the last
-    horizon year are reused (forward-filled) once the lifetime extends past
-    the optimization horizon.
+    where ``Δy = system.interval_between_years`` and ``n_steps =
+    ceil(lifetime / Δy)``. ``eff_year = min(investment_year + offset,
+    last_horizon_year)`` forward-fills the time steps and prices of the
+    last horizon year once the lifetime extends past the optimization
+    horizon. The aggregated-time-step duration is already baked into
+    ``specific_production`` (units GWh/GW), so no explicit ``duration[t]``
+    factor appears here.
 
     Args:
         optimization_setup: A solved ``OptimizationSetup``.
@@ -340,7 +348,6 @@ def calculate_revenue(
         return pd.Series(dtype=float, name="discounted_revenue")
 
     time_steps = optimization_setup.energy_system.time_steps
-    durations = pd.Series(time_steps.time_steps_operation_duration)
     op2year = pd.Series(time_steps.time_steps_operation2year)
     op_steps_by_year = {
         y: list(op2year[op2year == y].index) for y in horizon_years
@@ -381,7 +388,7 @@ def calculate_revenue(
                 p = prices.loc[key]
                 if pd.isna(s) or pd.isna(p):
                     continue
-                total += float(s) * float(p) * float(durations[t]) / disc
+                total += float(s) * float(p) / disc
         revenue.loc[(tech, carrier, node)] = capacity_addition_gw * total
     return revenue
 
