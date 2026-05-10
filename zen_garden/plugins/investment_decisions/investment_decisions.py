@@ -20,19 +20,8 @@ def _normalize_interval(optimization_setup):
     return factor
 
 
-def extract_shadow_prices_full_ts(optimization_setup):
-    """Return the full (disaggregated) time series of nodal energy balance duals.
-
-    Args:
-        optimization_setup: A solved ``OptimizationSetup`` whose solver was run
-            with ``save_duals = True``.
-
-
-    Returns:
-        pandas.DataFrame indexed by ``(set_carriers, set_nodes)`` with one
-        column per base time step holding the per-hour shadow price, or
-        ``None`` if duals are unavailable.
-    """
+def extract_aggregated_dual(optimization_setup):
+    """Return the dual variables / shadow prices for aggregated time steps."""
     model = optimization_setup.model
     constraint ="constraint_nodal_energy_balance"
     if constraint not in model.constraints:
@@ -54,6 +43,18 @@ def extract_shadow_prices_full_ts(optimization_setup):
     df_duals = duals.to_dataframe(name="dual").unstack("set_time_steps_operation")
     df_duals.columns = df_duals.columns.get_level_values("set_time_steps_operation")
 
+     # divide by per-year annuity, matching `Results.get_full_ts` for duals.
+    time_steps = optimization_setup.energy_system.time_steps
+    annuity = _normalize_interval(optimization_setup)
+    op2year = pd.Series(time_steps.time_steps_operation2year)
+    annuity_per_op = op2year.reindex(df_duals.columns).map(annuity)
+    df_duals = df_duals.div(annuity_per_op, axis=1)
+
+    return df_duals
+
+def extract_normalized_dual(optimization_setup):
+    """Return the dual variables / shadow prices for aggregated time steps, normalized to per-hour values."""
+    df_duals = extract_aggregated_dual(optimization_setup)
     time_steps = optimization_setup.energy_system.time_steps
 
     # divide by duration: the raw dual equals duration * per-hour price because
@@ -63,18 +64,17 @@ def extract_shadow_prices_full_ts(optimization_setup):
         df_duals.columns
     )
     df_duals = df_duals.div(durations, axis=1)
-
-    # divide by per-year annuity, matching `Results.get_full_ts` for duals.
-    annuity = _normalize_interval(optimization_setup)
-    op2year = pd.Series(time_steps.time_steps_operation2year)
-    annuity_per_op = op2year.reindex(df_duals.columns).map(annuity)
-    df_duals = df_duals.div(annuity_per_op, axis=1)
-
+   
     logging.info(
         "\n--- Normalized shadow prices per aggregated operational time step ---\n"
         f"{df_duals}\n"
     )
+    return df_duals
 
+def extract_shadow_prices_full_ts(optimization_setup):
+    """Return the dual variables / shadow prices expanded to the full base time step resolution."""
+    time_steps = optimization_setup.energy_system.time_steps
+    df_duals = extract_normalized_dual(optimization_setup)
     # map aggregated operation time steps onto the underlying base time steps
     sequence = np.asarray(time_steps.sequence_time_steps_operation)
     full_ts = df_duals.reindex(columns=sequence)
@@ -84,26 +84,14 @@ def extract_shadow_prices_full_ts(optimization_setup):
 
 def extract_average_shadow_prices(optimization_setup):
     """Return the average shadow price of nodal energy balance duals across time.
-
-    The shadow prices of ``constraint_nodal_energy_balance`` are extracted from
-    the solved model, normalized to a per-hour value (raw dual / duration of the
-    aggregated time step), and averaged across all aggregated operational time
-    steps.
-
-    Args:
-        optimization_setup: A solved ``OptimizationSetup`` whose solver was run
-            with ``save_duals = True``.
-
-    Returns:
-        pandas.DataFrame indexed by ``(set_carriers, set_nodes)`` with a single
-        column holding the average per-hour shadow price, or ``None`` if
-        duals are unavailable.
     """
     full_ts = extract_shadow_prices_full_ts(optimization_setup)
     if full_ts is None:
         return None
 
-    return full_ts.mean(axis=1).to_frame(name="average_shadow_price")
+    average_duals = full_ts.mean(axis=1).to_frame(name="average_shadow_price")
+    return average_duals
+
 
 # revenue calculation
 
@@ -116,10 +104,7 @@ def get_lifetime(optimization_setup) -> pd.Series:
         technologies) holding the lifetime parameter from the model.
     """
     sets = optimization_setup.sets
-    techs = list(sets["set_conversion_technologies"])
-    # parameters.lifetime is an xarray.DataArray indexed by set_technologies;
-    # to_series() preserves that index, unlike pd.Series(xarr, ...) which
-    # falls back to a positional integer index.
+    techs = list(sets["set_conversion_technologies"])    
     lifetime = optimization_setup.parameters.lifetime.to_series()
     lifetime.name = "lifetime"
     return lifetime.reindex(techs)
@@ -215,48 +200,6 @@ def get_specific_production(optimization_setup) -> pd.Series:
     return result
 
 
-def _extract_shadow_prices_per_op_step(optimization_setup) -> pd.Series | None:
-    """Per-aggregated-time-step normalized shadow price of the nodal energy balance.
-
-    Same normalization as ``extract_shadow_prices_full_ts`` (raw dual divided
-    by the operational time-step duration and by the per-year interval
-    weight), but stops before the base-time-step expansion.
-
-    Returns:
-        pandas.Series indexed by
-        (``set_carriers``, ``set_nodes``, ``set_time_steps_operation``), or
-        ``None`` if duals are unavailable.
-    """
-    model = optimization_setup.model
-    constraint = "constraint_nodal_energy_balance"
-    if constraint not in model.constraints:
-        logging.warning(
-            f"Constraint '{constraint}' not found in the model. "
-            "Cannot extract nodal energy balance duals."
-        )
-        return None
-    duals = model.constraints[constraint].dual
-    if duals is None:
-        logging.warning(
-            f"Duals for '{constraint}' are None. Make sure "
-            "`solver.save_duals` is enabled and the solver returned duals."
-        )
-        return None
-
-    time_steps = optimization_setup.energy_system.time_steps
-    durations = pd.Series(time_steps.time_steps_operation_duration)
-    op2year = pd.Series(time_steps.time_steps_operation2year)
-    annuity = _normalize_interval(optimization_setup)
-    op_level = "set_time_steps_operation"
-
-    series = duals.to_series().dropna()
-    ops = series.index.get_level_values(op_level)
-    series = series.div(ops.map(durations))
-    series = series.div(ops.map(op2year).map(annuity))
-    series.name = "shadow_price"
-    return series
-
-
 def get_shadow_price(optimization_setup) -> pd.Series | None:
     """Per-aggregated-time-step shadow prices for output carriers of all conversion techs.
 
@@ -270,9 +213,11 @@ def get_shadow_price(optimization_setup) -> pd.Series | None:
         ``set_time_steps_operation``) with the per-hour shadow price, or
         ``None`` if duals are unavailable.
     """
-    series = _extract_shadow_prices_per_op_step(optimization_setup)
-    if series is None:
+    df = extract_normalized_dual(optimization_setup)
+    if df is None:
         return None
+    series = df.stack().dropna()
+    series.name = "shadow_price"
 
     sets = optimization_setup.sets
     techs = list(sets["set_conversion_technologies"])
@@ -309,19 +254,22 @@ def calculate_revenue(
     Per (conversion technology, output carrier, node), the formula is::
 
         revenue = capacity_addition_gw
-                  * Σ_{offset=0..n_steps-1} Σ_{t in time_steps(eff_year)} (
-                        shadow_price[oc, node, t]
-                        * specific_production[tech, oc, node, t]
-                        / (1 + r) ** (Δy * offset)
+                  * Σ_{offset=0..n_steps-1} (
+                        annual_revenue[tech, oc, node, eff_year]
+                        / (1 + r) ** offset
                     )
 
-    where ``Δy = system.interval_between_years`` and ``n_steps =
-    ceil(lifetime / Δy)``. ``eff_year = min(investment_year + offset,
-    last_horizon_year)`` forward-fills the time steps and prices of the
-    last horizon year once the lifetime extends past the optimization
-    horizon. The aggregated-time-step duration is already baked into
-    ``specific_production`` (units GWh/GW), so no explicit ``duration[t]``
-    factor appears here.
+        where annual_revenue[tech, oc, node, year]
+            = Σ_{t in time_steps(year)} (
+                  shadow_price[oc, node, t] * specific_production[tech, oc, node, t]
+              )
+
+    ``n_steps = ceil(lifetime / Δy)`` where ``Δy =
+    system.interval_between_years``. ``eff_year = min(investment_year +
+    offset, last_horizon_year)`` forward-fills the annual revenue of the last
+    horizon year once the lifetime extends past the optimization horizon. The
+    aggregated-time-step duration is already baked into ``specific_production``
+    (units GWh/GW), so no explicit ``duration[t]`` factor appears here.
 
     Args:
         optimization_setup: A solved ``OptimizationSetup``.
@@ -349,25 +297,28 @@ def calculate_revenue(
 
     time_steps = optimization_setup.energy_system.time_steps
     op2year = pd.Series(time_steps.time_steps_operation2year)
-    op_steps_by_year = {
-        y: list(op2year[op2year == y].index) for y in horizon_years
-    }
+
+    # Pre-aggregate spec_prod * shadow_price over all t within each year.
+    op_level = "set_time_steps_operation"
+    product = spec_prod.mul(prices).dropna()
+    product.name = "prod_revenue"
+    product_df = product.reset_index()
+    product_df["set_time_steps_yearly"] = product_df[op_level].map(op2year)
+    annual_rev = (
+        product_df.groupby(
+            ["set_technologies", "set_output_carriers", "set_nodes", "set_time_steps_yearly"]
+        )["prod_revenue"].sum()
+    )
 
     logging.info(
         "\n--- Revenue calculation inputs ---\n"
         f"Discount rates per (tech, node):\n{discount_rate}\n\n"
         f"Lifetimes per tech (years):\n{lifetime}\n\n"
-        f"Specific production per (tech, oc, node, time_step_op):\n"
-        f"{spec_prod}\n\n"
-        f"Shadow prices per (tech, oc, node, time_step_op):\n{prices}\n"
+        f"Annual revenue (spec_prod * shadow_price summed over t) per "
+        f"(tech, oc, node, year):\n{annual_rev}\n"
     )
 
-    # Build the (tech, output_carrier, node) groups from the specific-production
-    # index by dropping the time-step level.
-    op_level = "set_time_steps_operation"
-    group_index = (
-        spec_prod.index.droplevel(op_level).unique()
-    )
+    group_index = annual_rev.index.droplevel("set_time_steps_yearly").unique()
 
     revenue = pd.Series(0.0, index=group_index, name="discounted_revenue")
     for tech, carrier, node in group_index:
@@ -379,16 +330,14 @@ def calculate_revenue(
         total = 0.0
         for offset in range(n_steps):
             eff_year = min(investment_year + offset, last_year)
-            disc = (1 + r) ** (interval * offset)
-            for t in op_steps_by_year.get(eff_year, []):
-                key = (tech, carrier, node, t)
-                if key not in spec_prod.index or key not in prices.index:
-                    continue
-                s = spec_prod.loc[key]
-                p = prices.loc[key]
-                if pd.isna(s) or pd.isna(p):
-                    continue
-                total += float(s) * float(p) / disc
+            disc = (1 + r) ** offset
+            key = (tech, carrier, node, eff_year)
+            if key not in annual_rev.index:
+                continue
+            val = annual_rev.loc[key]
+            if pd.isna(val):
+                continue
+            total += float(val) / disc
         revenue.loc[(tech, carrier, node)] = capacity_addition_gw * total
     return revenue
 
