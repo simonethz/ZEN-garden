@@ -123,19 +123,14 @@ def get_discount_rate(optimization_setup) -> pd.Series:
 
 
 def get_specific_production(optimization_setup) -> pd.Series:
-    """Production per GW installed capacity per aggregated operational time step.
+    """Production per GW installed capacity per aggregated operational time step. Sum over all time steps of one optimized year yields the yearly production per GW (in hours of full-load equivalent / GWh per GW).
 
     For each conversion technology, output carrier, node and aggregated
     operational time step ``t``, returns::
 
         flow_conversion_output[t] * time_steps_operation_duration[t]
             / capacity[year(t)]
-
-    Units: energy per capacity (GWh/GW = h), i.e. full-load-equivalent
-    hours per GW for that time step. Summing the values for all time steps
-    of one optimized year therefore yields the yearly production per GW
-    (in hours of full-load equivalent / GWh per GW).
-
+    
     Returns:
         pandas.Series indexed by
         (``set_technologies``, ``set_output_carriers``, ``set_nodes``,
@@ -228,7 +223,7 @@ def get_shadow_price(optimization_setup) -> pd.Series | None:
         right_on="set_carriers",
         how="inner",
     )
-    return merged.set_index(
+    mapped_shadow_price = merged.set_index(
         [
             "set_technologies",
             "set_output_carriers",
@@ -236,6 +231,7 @@ def get_shadow_price(optimization_setup) -> pd.Series | None:
             "set_time_steps_operation",
         ]
     )["shadow_price"]
+    return mapped_shadow_price
 
 
 def calculate_revenue(
@@ -319,10 +315,9 @@ def calculate_revenue(
         if pd.isna(lifetime.get(tech, np.nan)):
             continue
         tech_lifetime = int(lifetime[tech])
-        n_steps = int(np.ceil(tech_lifetime / interval))
         r = float(discount_rate.loc[(tech, node)])
         total = 0.0
-        for offset in range(n_steps):
+        for offset in range(tech_lifetime):
             eff_year = min(investment_year + offset, last_year)
             disc = (1 + r) ** offset
             key = (tech, carrier, node, eff_year)
