@@ -9,7 +9,7 @@ import logging
 
 from zen_garden.plugin_system.events import Event, EventPublisher
 from zen_garden.plugins.investment_decisions.investment_decisions import (
-    extract_average_shadow_prices, calculate_revenue, get_specific_capex
+    extract_average_shadow_prices, calculate_revenue, get_capex
 )
 
 config = {}
@@ -33,4 +33,4 @@ def after_optimization_event(optimization_setup):
         logging.warning("No revenue available to print.")
 
     # call capex
-    get_specific_capex(optimization_setup)
+    get_capex(optimization_setup)

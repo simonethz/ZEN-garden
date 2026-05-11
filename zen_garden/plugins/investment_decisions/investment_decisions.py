@@ -244,23 +244,17 @@ def calculate_revenue(
     Per (conversion technology, output carrier, node), the formula is::
 
         revenue = capacity_addition_gw
-                  * Σ_{offset=0..n_steps-1} (
+                  * Σ_{n=0..lifetime-1} (
                         annual_revenue[tech, oc, node, eff_year]
-                        / (1 + r) ** offset
+                        / (1 + r) ** n
                     )
 
         where annual_revenue[tech, oc, node, year]
-            = Σ_{t in time_steps(year)} (
+            = Σ_{t in aggregated time steps} (
                   shadow_price[oc, node, t] * specific_production[tech, oc, node, t]
               )
 
-    ``n_steps = ceil(lifetime / Δy)`` where ``Δy =
-    system.interval_between_years``. ``eff_year = min(investment_year +
-    offset, last_horizon_year)`` forward-fills the annual revenue of the last
-    horizon year once the lifetime extends past the optimization horizon. The
-    aggregated-time-step duration is already baked into ``specific_production``
-    (units GWh/GW), so no explicit ``duration[t]`` factor appears here.
-
+    
     Args:
         optimization_setup: A solved ``OptimizationSetup``.
         capacity_addition_gw: Hypothetical capacity addition (default 1 GW).
@@ -330,72 +324,107 @@ def calculate_revenue(
         revenue.loc[(tech, carrier, node)] = capacity_addition_gw * total
     return revenue
 
+def _capacity_addition(optimization_setup, capacity_gw: float = 1.0) -> pd.Series:
+    """Capacity addition per conversion technology.
 
-def get_specific_capex(optimization_setup) -> dict[str, pd.Series]:
-    """Specific CAPEX per GW (or GWh) for new capacity additions.
+    Currently returns a fixed ``capacity_gw`` for every technology.  The
+    function is intentionally kept as a thin shell so that per-technology or
+    per-node overrides can be introduced here without touching callers.
+    """
+    techs = list(optimization_setup.sets["set_conversion_technologies"])
+    return pd.Series(
+        capacity_gw,
+        index=pd.Index(techs, name="set_conversion_technologies"),
+        name="capacity_addition_gw",
+    )
 
-    Pulls the linear specific-capex coefficients used by the optimizer when
-    adding new capacity, restricted to the most recent year in
-    ``set_time_steps_yearly``:
 
-    - ``capex_specific_conversion`` — money per GW for conversion technologies
-      modeled with a linear capex (i.e. those in ``set_capex_linear``;
-      PWA-capex technologies are not represented here).
-    - ``capex_specific_storage`` — money per GW for storage power capacity and
-      money per GWh for storage energy capacity. The unit is implied by the
-      ``set_capacity_types`` index level (typically "power" / "energy").
+def get_capex(optimization_setup) -> pd.Series:
+    """Total annualized CAPEX for the capacity additions returned by
+    ``_capacity_addition``, for conversion technologies only.
 
-    Transport technologies are intentionally excluded since they are indexed
-    by edges rather than nodes.
+    Reads CAPEX data directly from ``optimization_setup`` and supports both:
+
+    - **Linear** (``set_capex_linear``):
+      ``capex = capex_specific_conversion [money/GW] × capacity_addition [GW]``
+    - **PWA** (``set_capex_pwa``): total cost is interpolated from the
+      technology's piecewise-linear breakpoint curve.  The curve is
+      node-independent, so every node of that technology receives the same
+      value.
+
+    Both paths share the same annualisation basis (``fraction_year``) and the
+    values are therefore directly comparable.
 
     Args:
-        optimization_setup: An ``OptimizationSetup`` whose parameters have
-            been initialized.
+        optimization_setup: A solved/initialized ``OptimizationSetup``.
 
     Returns:
-        dict with keys ``"conversion"`` and ``"storage"``. Each value is a
-        ``pandas.Series`` indexed by the parameter's location-and-tech levels
-        for the latest year. Keys are omitted if the corresponding parameter
-        is not present in the model.
+        ``pd.Series`` indexed by ``(set_conversion_technologies, set_nodes)``
+        with the annualised CAPEX in model money units.  Prints the result
+        before returning.
     """
+    from zen_garden.model.technology.conversion_technology import ConversionTechnology
+
     sets = optimization_setup.sets
     parameters = optimization_setup.parameters
     latest_year = max(sets["set_time_steps_yearly"])
+    nodes = list(sets["set_nodes"])
+    capacity = _capacity_addition(optimization_setup)
 
     def _select_year(param) -> pd.Series:
-        # parameter dim names get re-aliased (e.g. set_time_steps_yearly -> year);
-        # convert to a Series first and then filter on whichever year level exists.
         series = param.to_series().dropna()
         for level_name in ("set_time_steps_yearly", "year"):
             if level_name in series.index.names:
                 return series.xs(latest_year, level=level_name)
         return series
 
-    output: dict[str, pd.Series] = {}
+    records: list[dict] = []
 
+    # Linear conversion technologies
     if hasattr(parameters, "capex_specific_conversion"):
-        conv = _select_year(parameters.capex_specific_conversion)
-        conv.name = "capex_specific_conversion"
-        output["conversion"] = conv
+        capex_specific = _select_year(parameters.capex_specific_conversion)
+        for (tech, node), specific in capex_specific.items():
+            if tech not in capacity.index:
+                continue
+            records.append(
+                {
+                    "set_conversion_technologies": tech,
+                    "set_nodes": node,
+                    "capex": float(specific) * float(capacity[tech]),
+                }
+            )
 
-    if hasattr(parameters, "capex_specific_storage"):
-        stor = _select_year(parameters.capex_specific_storage)
-        stor.name = "capex_specific_storage"
-        output["storage"] = stor
-
-    logging.info(
-        f"\n--- Specific CAPEX for new capacity additions, year {latest_year} ---"
-    )
-    if "conversion" in output:
-        logging.info(
-            "\nConversion technologies (money per GW, linear-capex techs only):\n"
-            f"{output['conversion']}\n"
+    # PWA conversion technologies (curve is node-independent → same value for all nodes)
+    for tech in sets["set_conversion_technologies"]:
+        if not optimization_setup.get_attribute_of_specific_element(
+            ConversionTechnology, tech, "capex_is_pwa"
+        ):
+            continue
+        pwa_data = optimization_setup.get_attribute_of_specific_element(
+            ConversionTechnology, tech, "pwa_capex"
         )
-    if "storage" in output:
-        logging.info(
-            "\nStorage technologies "
-            "(money per GW for 'power', per GWh for 'energy'):\n"
-            f"{output['storage']}\n"
+        cap = float(capacity[tech])
+        total_capex = float(
+            np.interp(cap, pwa_data["capacity_addition"], pwa_data["capex"])
         )
+        for node in nodes:
+            records.append(
+                {
+                    "set_conversion_technologies": tech,
+                    "set_nodes": node,
+                    "capex": total_capex,
+                }
+            )
 
-    return output
+    if not records:
+        result = pd.Series(dtype=float, name="capex")
+    else:
+        result = pd.DataFrame(records).set_index(
+            ["set_conversion_technologies", "set_nodes"]
+        )["capex"]
+        result.name = "capex"
+
+    print(f"\n--- CAPEX für Kapazitätszubau (annualisiert) ---\n{result}\n")
+    logging.info(f"\n--- CAPEX für Kapazitätszubau (annualisiert) ---\n{result}\n")
+    return result
+
