@@ -19,9 +19,9 @@ def _normalize_interval(optimization_setup):
         factor[year] = 1 if year == years[-1] else interval
     return factor
 
-
+# dual extraction
 def extract_aggregated_dual(optimization_setup):
-    """Return the dual variables / shadow prices for aggregated time steps."""
+    """Return the dual variables / shadow prices for aggregated time steps (e.g. 5 time steps, values = hourly prices * number of this time step/year)."""
     model = optimization_setup.model
     constraint ="constraint_nodal_energy_balance"
     if constraint not in model.constraints:
@@ -53,7 +53,7 @@ def extract_aggregated_dual(optimization_setup):
     return df_duals
 
 def extract_normalized_dual(optimization_setup):
-    """Return the dual variables / shadow prices for aggregated time steps, normalized to per-hour values."""
+    """Return the dual variables / shadow prices for aggregated time steps, normalized to per-hour values (e.g. 5 time steps, values = hourly prices)."""
     df_duals = extract_aggregated_dual(optimization_setup)
     time_steps = optimization_setup.energy_system.time_steps
 
@@ -72,7 +72,7 @@ def extract_normalized_dual(optimization_setup):
     return df_duals
 
 def extract_shadow_prices_full_ts(optimization_setup):
-    """Return the dual variables / shadow prices expanded to the full base time step resolution."""
+    """Return the dual variables / shadow prices expanded to the full base time step resolution (e.g. 8760 values, values = hourly prices)."""
     time_steps = optimization_setup.energy_system.time_steps
     df_duals = extract_normalized_dual(optimization_setup)
     # map aggregated operation time steps onto the underlying base time steps
@@ -94,29 +94,22 @@ def extract_average_shadow_prices(optimization_setup):
 
 
 # revenue calculation
-
-
 def get_lifetime(optimization_setup) -> pd.Series:
     """Lifetime per conversion technology, in calendar years.
-
-    Returns:
-        pandas.Series indexed by ``set_technologies`` (restricted to conversion
-        technologies) holding the lifetime parameter from the model.
     """
     sets = optimization_setup.sets
     techs = list(sets["set_conversion_technologies"])    
     lifetime = optimization_setup.parameters.lifetime.to_series()
     lifetime.name = "lifetime"
-    return lifetime.reindex(techs)
+    lt = lifetime.reindex(techs)
+    return lt
 
 
 def get_discount_rate(optimization_setup) -> pd.Series:
     """Discount rate per (conversion technology, node).
 
     The model currently has only a system-wide scalar ``discount_rate``, so
-    every (tech, node) pair receives the same value. The (tech, node) shape
-    is kept so callers don't need to change once a tech-specific override is
-    added.
+    every (tech, node) pair receives the same value. 
     """
     sets = optimization_setup.sets
     techs = list(sets["set_conversion_technologies"])
@@ -125,7 +118,8 @@ def get_discount_rate(optimization_setup) -> pd.Series:
     idx = pd.MultiIndex.from_product(
         [techs, nodes], names=["set_technologies", "set_nodes"]
     )
-    return pd.Series(rate, index=idx, name="discount_rate")
+    discount_rate = pd.Series(rate, index=idx, name="discount_rate")
+    return discount_rate
 
 
 def get_specific_production(optimization_setup) -> pd.Series:

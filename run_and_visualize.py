@@ -76,7 +76,13 @@ def run_and_print_yearly_average_duals():
         f"(per carrier and node, {n_years} year(s) of {HOURS_PER_YEAR} h):\n"
         f"{yearly_average}"
     )
-    return yearly_average
+
+    flow = results.get_df("flow_conversion_output")
+    print(f"\nFlow conversion output (get df series):\n{flow}")
+    
+
+
+
 
 
 if __name__ == "__main__":
