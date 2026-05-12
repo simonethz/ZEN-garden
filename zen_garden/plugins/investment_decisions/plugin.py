@@ -9,7 +9,7 @@ import logging
 
 from zen_garden.plugin_system.events import Event, EventPublisher
 from zen_garden.plugins.investment_decisions.investment_decisions import (
-    extract_average_shadow_prices, calculate_revenue, get_capex
+    extract_average_shadow_prices, calculate_revenue, get_capex, get_fixed_opex_discounted
 )
 
 config = {}
@@ -37,3 +37,4 @@ def after_optimization_event(optimization_setup):
     # call capex
     print("\n--- Calculating and printing CAPEX ---")
     get_capex(optimization_setup)
+    get_fixed_opex_discounted(optimization_setup)

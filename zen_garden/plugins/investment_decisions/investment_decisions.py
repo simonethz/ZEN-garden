@@ -192,15 +192,7 @@ def get_specific_production(optimization_setup) -> pd.Series:
 def get_shadow_price(optimization_setup) -> pd.Series | None:
     """Per-aggregated-time-step shadow prices for output carriers of all conversion techs.
 
-    Broadcasts each ``(carrier, node, time_step_operation)`` normalized
-    shadow price onto every conversion technology whose set of output
-    carriers contains that carrier.
-
-    Returns:
-        pandas.Series indexed by
-        (``set_technologies``, ``set_output_carriers``, ``set_nodes``,
-        ``set_time_steps_operation``) with the per-hour shadow price, or
-        ``None`` if duals are unavailable.
+    Transforms to pd.Series and maps  duals variables / shadow prices to technologies (based on output carriers) istead of technologies.
     """
     df = extract_normalized_dual(optimization_setup)
     if df is None:
@@ -254,9 +246,6 @@ def calculate_revenue(optimization_setup) -> pd.Series:
     for all years of the technology lifetime. An optional investment delay
     (from ``_get_investment_delay``) shifts the discounting window forward.
     Capacity additions are taken from ``_capacity_addition``.
-
-    Args:
-        optimization_setup: A solved ``OptimizationSetup``.
 
     Returns:
         pandas.Series indexed by
@@ -427,3 +416,118 @@ def get_capex(optimization_setup) -> pd.Series:
    
     return result
 
+def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
+    """Total fixed OPEX for the capacity additions  returned by
+    ``_capacity_addition`` discounted to the decision year, for conversion technologies only.
+
+    Extrects fixed OPEX data from ``optimization_setup`` and uses the same capacity addition and investment delay principle as in the revenue calculation. 
+
+    Dataflow:
+    - extract fixed OPEX specific to conversion technologies for all years available in the dataset. For years where no data is available, the value for the latest available year is used.
+    - apply the same capacity_addition and investment delay principle as in the revenue calculation to calculate the discounted fixed OPEX for each technology and node.
+    - The fixed OPEX are discounted to the decision year using the discount rate from ``get_discount_rate`` and the investment delay from ``_get_investment_delay`` over the lifetime of the respective technology.
+    - The result is printed and returned as a pandas Series indexed by (``set_conversion_technologies``, ``set_nodes``) with the discounted fixed OPEX in model money units.
+      """
+    sets = optimization_setup.sets
+    parameters = optimization_setup.parameters
+
+    techs = list(sets["set_conversion_technologies"])
+    nodes = list(sets["set_nodes"])
+    available_years = sorted(sets["set_time_steps_yearly"])
+    max_year = max(available_years)
+    min_year = min(available_years)
+
+    # Sum over capacity types; rename set_location → set_nodes
+    opex_series = (
+        parameters.opex_specific_fixed
+        .sum("set_capacity_types")
+        .to_series()
+        .dropna()
+    )
+    if "set_location" in opex_series.index.names:
+        opex_series.index = opex_series.index.rename({"set_location": "set_nodes"})
+    opex_series = opex_series[
+        opex_series.index.get_level_values("set_technologies").isin(techs)
+    ]
+
+    discount_rate = get_discount_rate(optimization_setup)
+    lifetime = get_lifetime(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition = _capacity_addition(optimization_setup)
+
+    idx = pd.MultiIndex.from_product(
+        [techs, nodes],
+        names=["set_conversion_technologies", "set_nodes"],
+    )
+    result = pd.Series(0.0, index=idx, name="fixed_opex_discounted")
+
+    for tech in techs:
+        if pd.isna(lifetime.get(tech, np.nan)):
+            continue
+        tech_lifetime = int(lifetime[tech])
+        delay = int(investment_delay[tech])
+        cap = float(capacity_addition[tech])
+
+        for node in nodes:
+            r = float(discount_rate.loc[(tech, node)])
+            total = 0.0
+
+            for offset in range(delay, tech_lifetime + delay):
+                opex_val = None
+
+                if offset in available_years:
+                    data_year = offset
+                elif offset > max_year:
+                    data_year = max_year
+                elif offset < min_year:
+                    data_year = min_year
+                else:
+                    # Interpolate between the two surrounding data years
+                    lower = max(y for y in available_years if y <= offset)
+                    upper = min(y for y in available_years if y >= offset)
+                    t_frac = (offset - lower) / (upper - lower)
+                    print(
+                        f"HINWEIS: Fixed OPEX für ({tech}, {node}) Jahr {offset} "
+                        f"nicht in set_time_steps_yearly — interpoliere zwischen "
+                        f"Jahr {lower} und {upper}."
+                    )
+                    logging.warning(
+                        "Fixed OPEX for (%s, %s) year %d not in set_time_steps_yearly "
+                        "— interpolating between year %d and %d.",
+                        tech, node, offset, lower, upper,
+                    )
+                    try:
+                        val_lower = float(opex_series.loc[(tech, node, lower)])
+                        val_upper = float(opex_series.loc[(tech, node, upper)])
+                    except KeyError:
+                        continue
+                    opex_val = val_lower + t_frac * (val_upper - val_lower)
+                    data_year = None
+
+                if opex_val is None:
+                    try:
+                        opex_val = float(opex_series.loc[(tech, node, data_year)])
+                    except KeyError:
+                        continue
+
+                total += opex_val / (1 + r) ** offset
+
+            result.loc[(tech, node)] = cap * total
+
+    print(f"\n--- Diskontierte fixe OPEX für Kapazitätszubau ---\n{result}\n")
+    return result
+
+
+def get_variable_opex_discounted(optimization_setup) -> pd.Series:
+    """Total variable OPEX for the capacity additions  returned by
+    ``_capacity_addition`` discounted to the decision year, for conversion technologies only.
+
+    Extrects variable OPEX data from ``optimization_setup`` and uses the same capacity addition and investment delay principle as in the revenue calculation. 
+
+    Dataflow:
+    - extract variable OPEX [MEUR/MWh] specific to conversion technologies for all years available in the dataset. For years where no data is available, the value for the latest available year is used.
+    - Obtain the actual cost by multiplying the variable OPEX with the specific production per GW installed capacity and the capacity addition for each technology and node. 
+    - apply the same investment delay principle as in the revenue calculation to calculate the discounted variable OPEX for each technology and node.
+    - The variable OPEX are discounted to the decision year using the discount rate from ``get_discount_rate`` and the investment delay from ``_get_investment_delay`` over the lifetime of the respective technology.
+    - The result is printed and returned as a pandas Series indexed by (``set_conversion_technologies``, ``set_nodes``) with the discounted variable OPEX in model money units.
+      """
