@@ -334,7 +334,7 @@ def _get_investment_delay(optimization_setup, delay_years: int = 0) -> pd.Series
 
 
 def get_capex(optimization_setup) -> pd.Series:
-    """Total annualized CAPEX for the capacity additions returned by
+    """Total annualized CAPEX [MEUR] for the capacity additions returned by
     ``_capacity_addition``, for conversion technologies only.
 
     Reads CAPEX data directly from ``optimization_setup`` and supports both:
@@ -417,7 +417,7 @@ def get_capex(optimization_setup) -> pd.Series:
     return result
 
 def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
-    """Total fixed OPEX for the capacity additions  returned by
+    """Total fixed OPEX [MEUR] for the capacity additions  returned by
     ``_capacity_addition`` discounted to the decision year, for conversion technologies only.
 
     Extrects fixed OPEX data from ``optimization_setup`` and uses the same capacity addition and investment delay principle as in the revenue calculation. 
@@ -472,6 +472,7 @@ def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
             r = float(discount_rate.loc[(tech, node)])
             total = 0.0
 
+            # TODO: currently OPEX from investment year -> no consideration of different OPEX for subsequent years
             for offset in range(delay, tech_lifetime + delay):
                 opex_val = None
 
@@ -514,18 +515,115 @@ def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
 
             result.loc[(tech, node)] = cap * total
 
-    print(f"\n--- Diskontierte fixe OPEX für Kapazitätszubau ---\n{result}\n")
+    print(f"\n--- Discounted Fixed OPEX for Capacity Additions ---\n{result}\n")
+    return result
+
+def get_flow_reference_carrier(optimization_setup) -> pd.Series:
+    """Extracts the flow of the reference carrier for all conversion technologies and nodes from the optimization setup and divides it by the installed capacity.
+
+    The reference carrier may be an input or output carrier
+    (stored in ``sets["set_reference_carriers"]``).  Both
+    ``flow_conversion_output`` and ``flow_conversion_input`` are checked.
+
+    For each conversion technology, node and aggregated operational time step
+    ``t``, returns::
+
+        flow_ref[t] * time_steps_operation_duration[t] / capacity[year(t)]
+
+    Returns:
+        pandas.Series indexed by
+        (``set_technologies``, ``set_nodes``, ``set_time_steps_operation``).
+        ``NaN`` where capacity is zero.
+    """
+    sets = optimization_setup.sets
+    techs = list(sets["set_conversion_technologies"])
+    time_steps = optimization_setup.energy_system.time_steps
+    op2year = pd.Series(time_steps.time_steps_operation2year)
+    durations = pd.Series(time_steps.time_steps_operation_duration)
+    op_level = "set_time_steps_operation"
+
+    ref_carriers = sets["set_reference_carriers"]  # dict: tech -> [carrier]
+
+    def _load_flow(var_name, carrier_level):
+        s = optimization_setup.model.solution[var_name].to_series().dropna()
+        s = s[s.index.get_level_values("set_conversion_technologies").isin(techs)]
+        s.index = s.index.rename({"set_conversion_technologies": "set_technologies"})
+        if "set_location" in s.index.names:
+            s.index = s.index.rename({"set_location": "set_nodes"})
+        return s, carrier_level
+
+    flow_out, out_level = _load_flow("flow_conversion_output", "set_output_carriers")
+    flow_in, in_level = _load_flow("flow_conversion_input", "set_input_carriers")
+
+    segments = []
+    tech_ref_map: dict[str, str] = {}
+    for tech in techs:
+        ref = ref_carriers[tech][0]
+
+        # Try output carriers first, then input carriers
+        for flow_series, carrier_level in [(flow_out, out_level), (flow_in, in_level)]:
+            tech_mask = flow_series.index.get_level_values("set_technologies") == tech
+            carrier_mask = flow_series.index.get_level_values(carrier_level) == ref
+            segment = flow_series[tech_mask & carrier_mask]
+            if not segment.empty:
+                segments.append(segment.droplevel(carrier_level))
+                tech_ref_map[tech] = ref
+                break
+
+    if not segments:
+        return pd.Series(dtype=float, name="specific_ref_flow_per_gw")
+
+    ref_flow = pd.concat(segments)
+
+    # Weight by duration: [energy/time] → [energy] per time-step interval
+    ref_flow = ref_flow.mul(ref_flow.index.get_level_values(op_level).map(durations))
+
+    capacity = (
+        optimization_setup.model.solution["capacity"]
+        .sum("set_capacity_types")
+        .to_series()
+        .dropna()
+    )
+    capacity = capacity[capacity.index.get_level_values("set_technologies").isin(techs)]
+    if "set_location" in capacity.index.names:
+        capacity.index = capacity.index.rename({"set_location": "set_nodes"})
+
+    flow_df = ref_flow.to_frame("flow_energy").reset_index()
+    flow_df["set_time_steps_yearly"] = flow_df[op_level].map(op2year)
+    cap_df = capacity.to_frame("capacity").reset_index()
+
+    merged = flow_df.merge(
+        cap_df,
+        on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
+        how="left",
+    )
+    merged["spec"] = (
+        (merged["flow_energy"] / merged["capacity"])
+        .replace([np.inf, -np.inf], np.nan)
+    )
+    merged["reference_carrier"] = merged["set_technologies"].map(tech_ref_map)
+    result = merged.set_index(
+        ["set_technologies", "reference_carrier", "set_nodes", op_level]
+    )["spec"]
+    result.name = "specific_ref_flow_per_gw"
+
+    ref_summary = "\n".join(f"  {t}: {c}" for t, c in tech_ref_map.items())
+    print(
+        f"\n--- Specific reference carrier flow per GW [MWh/GW] ---\n"
+        f"Reference carriers used:\n{ref_summary}\n\n"
+        f"{result}\n"
+    )
     return result
 
 
 def get_variable_opex_discounted(optimization_setup) -> pd.Series:
-    """Total variable OPEX for the capacity additions  returned by
+    """Total variable OPEX [MEUR] for the capacity additions  returned by
     ``_capacity_addition`` discounted to the decision year, for conversion technologies only.
 
-    Extrects variable OPEX data from ``optimization_setup`` and uses the same capacity addition and investment delay principle as in the revenue calculation. 
+    Extracts variable OPEX data from ``optimization_setup`` and uses the same capacity addition and investment delay principle as in the revenue calculation. 
 
     Dataflow:
-    - extract variable OPEX [MEUR/MWh] specific to conversion technologies for all years available in the dataset. For years where no data is available, the value for the latest available year is used.
+    - extract variable OPEX [EUR/MWh] specific to conversion technologies for all years available in the dataset. For years where no data is available, the value for the latest available year is used.
     - Obtain the actual cost by multiplying the variable OPEX with the specific production per GW installed capacity and the capacity addition for each technology and node. 
     - apply the same investment delay principle as in the revenue calculation to calculate the discounted variable OPEX for each technology and node.
     - The variable OPEX are discounted to the decision year using the discount rate from ``get_discount_rate`` and the investment delay from ``_get_investment_delay`` over the lifetime of the respective technology.
