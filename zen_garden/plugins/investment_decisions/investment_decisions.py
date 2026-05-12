@@ -234,61 +234,52 @@ def get_shadow_price(optimization_setup) -> pd.Series | None:
     return mapped_shadow_price
 
 
-def calculate_revenue(
-    optimization_setup,
-    capacity_addition_gw: float = 1.0,
-    investment_year: int = 0,
-) -> pd.Series:
+def calculate_revenue(optimization_setup) -> pd.Series:
     """Discounted lifetime revenue for a hypothetical capacity addition.
 
     Per (conversion technology, output carrier, node), the formula is::
 
         revenue = capacity_addition_gw
-                  * Σ_{n=0..lifetime-1} (
-                        annual_revenue[tech, oc, node, eff_year]
+                  * Σ_{n=delay..lifetime+delay-1} (
+                        annual_revenue[tech, oc, node]
                         / (1 + r) ** n
                     )
 
-        where annual_revenue[tech, oc, node, year]
+        where annual_revenue[tech, oc, node]
             = Σ_{t in aggregated time steps} (
                   shadow_price[oc, node, t] * specific_production[tech, oc, node, t]
               )
 
-    
+    The single optimization year is used as a representative annual revenue
+    for all years of the technology lifetime. An optional investment delay
+    (from ``_get_investment_delay``) shifts the discounting window forward.
+    Capacity additions are taken from ``_capacity_addition``.
+
     Args:
         optimization_setup: A solved ``OptimizationSetup``.
-        capacity_addition_gw: Hypothetical capacity addition (default 1 GW).
-        investment_year: Year index in ``set_time_steps_yearly`` in which the
-            capacity is added.
 
     Returns:
         pandas.Series indexed by
         (``set_technologies``, ``set_output_carriers``, ``set_nodes``) with
         the discounted revenue in the model's money unit.
     """
-    sets = optimization_setup.sets
-    horizon_years = sorted(sets["set_time_steps_yearly"])
-    last_year = horizon_years[-1]
-
     discount_rate = get_discount_rate(optimization_setup)
     lifetime = get_lifetime(optimization_setup)
     spec_prod = get_specific_production(optimization_setup)
     prices = get_shadow_price(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition_gw = _capacity_addition(optimization_setup)
     if spec_prod is None or prices is None or spec_prod.empty:
+        print("\n--- Revenue calculation skipped: missing specific production or shadow price data ---\n")
         return pd.Series(dtype=float, name="discounted_revenue")
 
-    time_steps = optimization_setup.energy_system.time_steps
-    op2year = pd.Series(time_steps.time_steps_operation2year)
-
-    # Pre-aggregate spec_prod * shadow_price over all t within each year.
-    op_level = "set_time_steps_operation"
+    # Aggregate spec_prod * shadow_price over all operational time steps.
     product = spec_prod.mul(prices).dropna()
     product.name = "prod_revenue"
     product_df = product.reset_index()
-    product_df["set_time_steps_yearly"] = product_df[op_level].map(op2year)
     annual_rev = (
         product_df.groupby(
-            ["set_technologies", "set_output_carriers", "set_nodes", "set_time_steps_yearly"]
+            ["set_technologies", "set_output_carriers", "set_nodes"]
         )["prod_revenue"].sum()
     )
 
@@ -297,30 +288,30 @@ def calculate_revenue(
         f"Lifetimes per tech (years):\n{lifetime}\n\n"
         f"Specific production per (tech, oc, node, t):\n{spec_prod}\n\n"
         f"Annual revenue (spec_prod * shadow_price summed over t) per "
-        f"(tech, oc, node, year):\n{annual_rev}\n"
+        f"(tech, oc, node):\n{annual_rev}\n"
     )
 
-    group_index = annual_rev.index.droplevel("set_time_steps_yearly").unique()
+    group_index = annual_rev.index
 
     revenue = pd.Series(0.0, index=group_index, name="discounted_revenue")
     for tech, carrier, node in group_index:
         if pd.isna(lifetime.get(tech, np.nan)):
             continue
         tech_lifetime = int(lifetime[tech])
+        delay = investment_delay[tech]
+        capacity = capacity_addition_gw[tech]
         r = float(discount_rate.loc[(tech, node)])
         total = 0.0
-        for offset in range(tech_lifetime):
-            print(f"\n iteration {offset}")
-            eff_year = min(investment_year + offset, last_year)
+        for offset in range(0 + delay,tech_lifetime + delay):
             disc = (1 + r) ** offset
-            key = (tech, carrier, node, eff_year)
+            key = (tech, carrier, node)
             if key not in annual_rev.index:
                 continue
             val = annual_rev.loc[key]
             if pd.isna(val):
                 continue
             total += float(val) / disc
-        revenue.loc[(tech, carrier, node)] = capacity_addition_gw * total
+        revenue.loc[(tech, carrier, node)] = capacity * total
     return revenue
 
 def _capacity_addition(optimization_setup, capacity_gw: float = 1.0) -> pd.Series:
@@ -335,6 +326,21 @@ def _capacity_addition(optimization_setup, capacity_gw: float = 1.0) -> pd.Serie
         capacity_gw,
         index=pd.Index(techs, name="set_conversion_technologies"),
         name="capacity_addition_gw",
+    )
+
+
+def _get_investment_delay(optimization_setup, delay_years: int = 0) -> pd.Series:
+    """Investment delay (in years) per conversion technology.
+
+    Currently returns a fixed ``delay_years`` for every technology.  The
+    function is intentionally kept as a thin shell so that per-technology or
+    per-node overrides can be introduced here without touching callers.
+    """
+    techs = list(optimization_setup.sets["set_conversion_technologies"])
+    return pd.Series(
+        delay_years,
+        index=pd.Index(techs, name="set_conversion_technologies"),
+        name="investment_delay_years",
     )
 
 
