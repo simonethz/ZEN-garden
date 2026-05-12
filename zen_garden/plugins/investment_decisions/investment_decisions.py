@@ -267,8 +267,6 @@ def calculate_revenue(
         the discounted revenue in the model's money unit.
     """
     sets = optimization_setup.sets
-    system = optimization_setup.system
-    interval = system.interval_between_years
     horizon_years = sorted(sets["set_time_steps_yearly"])
     last_year = horizon_years[-1]
 
@@ -296,8 +294,8 @@ def calculate_revenue(
 
     logging.info(
         "\n--- Revenue calculation inputs ---\n"
-        f"Discount rates per (tech, node):\n{discount_rate}\n\n"
         f"Lifetimes per tech (years):\n{lifetime}\n\n"
+        f"Specific production per (tech, oc, node, t):\n{spec_prod}\n\n"
         f"Annual revenue (spec_prod * shadow_price summed over t) per "
         f"(tech, oc, node, year):\n{annual_rev}\n"
     )
@@ -312,6 +310,7 @@ def calculate_revenue(
         r = float(discount_rate.loc[(tech, node)])
         total = 0.0
         for offset in range(tech_lifetime):
+            print(f"\n iteration {offset}")
             eff_year = min(investment_year + offset, last_year)
             disc = (1 + r) ** offset
             key = (tech, carrier, node, eff_year)
@@ -346,22 +345,15 @@ def get_capex(optimization_setup) -> pd.Series:
     Reads CAPEX data directly from ``optimization_setup`` and supports both:
 
     - **Linear** (``set_capex_linear``):
-      ``capex = capex_specific_conversion [money/GW] × capacity_addition [GW]``
+      ``capex = capex_specific_conversion [money/GW] * capacity_addition [GW]``
     - **PWA** (``set_capex_pwa``): total cost is interpolated from the
       technology's piecewise-linear breakpoint curve.  The curve is
       node-independent, so every node of that technology receives the same
       value.
 
-    Both paths share the same annualisation basis (``fraction_year``) and the
-    values are therefore directly comparable.
-
-    Args:
-        optimization_setup: A solved/initialized ``OptimizationSetup``.
-
     Returns:
         ``pd.Series`` indexed by ``(set_conversion_technologies, set_nodes)``
-        with the annualised CAPEX in model money units.  Prints the result
-        before returning.
+        with the annualised CAPEX in model money units.  
     """
     from zen_garden.model.technology.conversion_technology import ConversionTechnology
 
@@ -403,6 +395,7 @@ def get_capex(optimization_setup) -> pd.Series:
         pwa_data = optimization_setup.get_attribute_of_specific_element(
             ConversionTechnology, tech, "pwa_capex"
         )
+        print(f"\n used PWA for " + tech)
         cap = float(capacity[tech])
         total_capex = float(
             np.interp(cap, pwa_data["capacity_addition"], pwa_data["capex"])
@@ -425,6 +418,6 @@ def get_capex(optimization_setup) -> pd.Series:
         result.name = "capex"
 
     print(f"\n--- CAPEX für Kapazitätszubau (annualisiert) ---\n{result}\n")
-    logging.info(f"\n--- CAPEX für Kapazitätszubau (annualisiert) ---\n{result}\n")
+   
     return result
 

@@ -19,6 +19,7 @@ config = {}
 def after_optimization_event(optimization_setup):
     
     # print average shadow prices
+    print("\n--- Extracting and printing average shadow prices ---")
     average_prices = extract_average_shadow_prices(optimization_setup)
     if average_prices is not None:
         logging.info(f"\n--- Average Shadow Prices ---\n{average_prices}\n")
@@ -26,6 +27,7 @@ def after_optimization_event(optimization_setup):
         logging.warning("No average shadow prices available to print.")
 
     # print revenue calculation
+    print("\n--- Calculating and printing revenue ---")
     revenue = calculate_revenue(optimization_setup)
     if revenue is not None:
         logging.info(f"\n--- Revenue ---\n{revenue}\n")
@@ -33,4 +35,5 @@ def after_optimization_event(optimization_setup):
         logging.warning("No revenue available to print.")
 
     # call capex
+    print("\n--- Calculating and printing CAPEX ---")
     get_capex(optimization_setup)
