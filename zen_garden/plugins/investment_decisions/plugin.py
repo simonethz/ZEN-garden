@@ -9,7 +9,7 @@ import logging
 
 from zen_garden.plugin_system.events import Event, EventPublisher
 from zen_garden.plugins.investment_decisions.investment_decisions import (
-    extract_average_shadow_prices, calculate_revenue, get_capex, get_fixed_opex_discounted, get_flow_reference_carrier
+    calculate_profitability, extract_average_shadow_prices, calculate_revenue, get_capex, get_fixed_opex_discounted, get_flow_reference_carrier, get_variable_opex_discounted, visualization
 )
 
 config = {}
@@ -40,5 +40,8 @@ def after_optimization_event(optimization_setup):
 
     #call opex
     print("\n--- Calculating and printing discounted fixed OPEX ---")
-    get_fixed_opex_discounted(optimization_setup)
-    get_flow_reference_carrier(optimization_setup)
+    #get_fixed_opex_discounted(optimization_setup)
+    #get_flow_reference_carrier(optimization_setup)
+    #get_variable_opex_discounted(optimization_setup)
+    calculate_profitability(optimization_setup)
+    visualization(optimization_setup)

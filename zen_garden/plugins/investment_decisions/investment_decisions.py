@@ -629,3 +629,276 @@ def get_variable_opex_discounted(optimization_setup) -> pd.Series:
     - The variable OPEX are discounted to the decision year using the discount rate from ``get_discount_rate`` and the investment delay from ``_get_investment_delay`` over the lifetime of the respective technology.
     - The result is printed and returned as a pandas Series indexed by (``set_conversion_technologies``, ``set_nodes``) with the discounted variable OPEX in model money units.
       """
+    sets = optimization_setup.sets
+    parameters = optimization_setup.parameters
+
+    techs = list(sets["set_conversion_technologies"])
+    nodes = list(sets["set_nodes"])
+    time_steps = optimization_setup.energy_system.time_steps
+    op2year = pd.Series(time_steps.time_steps_operation2year)
+    op_level = "set_time_steps_operation"
+    available_years = sorted(sets["set_time_steps_yearly"])
+    max_year = max(available_years)
+    min_year = min(available_years)
+
+    # Extract opex_specific_variable [EUR/MWh] per operational time step
+    opex_var = parameters.opex_specific_variable.to_series().dropna()
+    opex_var = opex_var[opex_var.index.get_level_values("set_technologies").isin(techs)]
+    if "set_location" in opex_var.index.names:
+        opex_var.index = opex_var.index.rename({"set_location": "set_nodes"})
+
+    # Specific reference flow per GW [MWh/GW per time step]
+    ref_flow = get_flow_reference_carrier(optimization_setup)
+    ref_flow = ref_flow.droplevel("reference_carrier")
+
+    # Multiply: [EUR/MWh] * [MWh/GW] = [EUR/GW] per time step, then sum per year
+    opex_var_df = opex_var.rename("opex_var").reset_index()
+    ref_flow_df = ref_flow.rename("ref_flow").reset_index()
+    product_df = opex_var_df.merge(
+        ref_flow_df,
+        on=["set_technologies", "set_nodes", op_level],
+        how="inner",
+    )
+    product_df["cost"] = product_df["opex_var"] * product_df["ref_flow"]
+    product_df["set_time_steps_yearly"] = product_df[op_level].map(op2year)
+    annual_var_opex = (
+        product_df
+        .groupby(["set_technologies", "set_nodes", "set_time_steps_yearly"])["cost"]
+        .sum()
+    )
+
+    discount_rate = get_discount_rate(optimization_setup)
+    lifetime = get_lifetime(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition = _capacity_addition(optimization_setup)
+
+    idx = pd.MultiIndex.from_product(
+        [techs, nodes],
+        names=["set_conversion_technologies", "set_nodes"],
+    )
+    result = pd.Series(0.0, index=idx, name="variable_opex_discounted")
+
+    for tech in techs:
+        if pd.isna(lifetime.get(tech, np.nan)):
+            continue
+        tech_lifetime = int(lifetime[tech])
+        delay = int(investment_delay[tech])
+        cap = float(capacity_addition[tech])
+
+        for node in nodes:
+            r = float(discount_rate.loc[(tech, node)])
+            total = 0.0
+
+            for offset in range(delay, tech_lifetime + delay):
+                opex_val = None
+
+                if offset in available_years:
+                    data_year = offset
+                elif offset > max_year:
+                    data_year = max_year
+                elif offset < min_year:
+                    data_year = min_year
+                else:
+                    lower = max(y for y in available_years if y <= offset)
+                    upper = min(y for y in available_years if y >= offset)
+                    t_frac = (offset - lower) / (upper - lower)
+                    print(
+                        f"HINWEIS: Variable OPEX für ({tech}, {node}) Jahr {offset} "
+                        f"nicht in set_time_steps_yearly — interpoliere zwischen "
+                        f"Jahr {lower} und {upper}."
+                    )
+                    logging.warning(
+                        "Variable OPEX for (%s, %s) year %d not in set_time_steps_yearly "
+                        "— interpolating between year %d and %d.",
+                        tech, node, offset, lower, upper,
+                    )
+                    try:
+                        val_lower = float(annual_var_opex.loc[(tech, node, lower)])
+                        val_upper = float(annual_var_opex.loc[(tech, node, upper)])
+                    except KeyError:
+                        continue
+                    opex_val = val_lower + t_frac * (val_upper - val_lower)
+                    data_year = None
+
+                if opex_val is None:
+                    try:
+                        opex_val = float(annual_var_opex.loc[(tech, node, data_year)])
+                    except KeyError:
+                        continue
+
+                total += opex_val / (1 + r) ** offset
+
+            result.loc[(tech, node)] = cap * total
+
+    print(f"\n--- Discounted Variable OPEX for Capacity Additions ---\n{result}\n")
+    return result
+
+
+def calculate_profitability(optimization_setup) -> pd.Series:
+    """Calculate profitability of the capacity addition as revenue minus costs.
+
+    Costs include both CAPEX and OPEX (fixed and variable).  The same capacity
+    addition, investment delay and discounting principles are applied as in the
+    revenue and cost calculations.
+
+    Returns:
+        pandas.Series indexed by (``set_conversion_technologies``, ``set_nodes``)
+        with the discounted profitability in model money units.
+    """
+    revenue = calculate_revenue(optimization_setup)
+    capex = get_capex(optimization_setup)
+    fixed_opex = get_fixed_opex_discounted(optimization_setup)
+    variable_opex = get_variable_opex_discounted(optimization_setup)
+
+    # revenue is indexed by (set_technologies, set_output_carriers, set_nodes);
+    # sum over output carriers and rename to match the cost index names.
+    revenue_by_tech_node = (
+        revenue
+        .groupby(level=["set_technologies", "set_nodes"])
+        .sum()
+        .rename_axis(index={"set_technologies": "set_conversion_technologies"})
+    )
+
+    profitability = revenue_by_tech_node.subtract(capex, fill_value=0)
+    profitability = profitability.subtract(fixed_opex, fill_value=0)
+    profitability = profitability.subtract(variable_opex, fill_value=0)
+    profitability.name = "profitability"
+
+    print(
+        f"\n--- Profitability of Capacity Additions ---\n"
+        f"{'Tech / Node':<45} {'Revenue':>12} {'CAPEX':>12} "
+        f"{'Fixed OPEX':>12} {'Var OPEX':>12} {'Profit':>12}\n"
+        + "-" * 105
+    )
+    for idx in profitability.index:
+        rev_val = revenue_by_tech_node.get(idx, 0.0)
+        cap_val = capex.get(idx, 0.0)
+        fop_val = fixed_opex.get(idx, 0.0)
+        vop_val = variable_opex.get(idx, 0.0)
+        pro_val = profitability[idx]
+        print(
+            f"{str(idx):<45} {rev_val:>12.2f} {cap_val:>12.2f} "
+            f"{fop_val:>12.2f} {vop_val:>12.2f} {pro_val:>12.2f}"
+        )
+    print()
+    return profitability
+
+def visualization(
+    optimization_setup,
+    output_dir: str = r"D:\Students\ssambale_jwiegner\Crystal-Ball\visualization",
+) -> None:
+    """Generate and save investment-decision visualizations.
+
+    Saves two plot types to ``output_dir``, each suffixed with the current
+    calendar year so runs for different optimization periods do not overwrite
+    each other:
+    - ``profitability_breakdown_<year>.png``: revenue vs. stacked costs + net-profit marker per tech/node
+    - ``profitability_net_<year>.png``: net profit bar chart, color-coded profitable / loss
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from pathlib import Path
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    year = max(optimization_setup.sets["set_time_steps_yearly"])
+
+    # --- collect component data ---
+    revenue = calculate_revenue(optimization_setup)
+    capex = get_capex(optimization_setup)
+    fixed_opex = get_fixed_opex_discounted(optimization_setup)
+    variable_opex = get_variable_opex_discounted(optimization_setup)
+
+    revenue_by_tech_node = (
+        revenue
+        .groupby(level=["set_technologies", "set_nodes"])
+        .sum()
+        .rename_axis(index={"set_technologies": "set_conversion_technologies"})
+    )
+
+    profitability = (
+        revenue_by_tech_node
+        .subtract(capex, fill_value=0)
+        .subtract(fixed_opex, fill_value=0)
+        .subtract(variable_opex, fill_value=0)
+    )
+    profitability.name = "profitability"
+
+    idx = profitability.index
+    if idx.empty:
+        print("visualization: keine Profitabilitätsdaten vorhanden, Diagramme werden übersprungen.")
+        return
+
+    rev = revenue_by_tech_node.reindex(idx, fill_value=0)
+    cap = capex.reindex(idx, fill_value=0)
+    fop = fixed_opex.reindex(idx, fill_value=0)
+    vop = variable_opex.reindex(idx, fill_value=0)
+    pro = profitability
+
+    labels = [f"{t}\n{n}" for t, n in idx]
+    x = list(range(len(labels)))
+    fig_width = max(9, len(labels) * 1.6)
+
+    # ------------------------------------------------------------------ #
+    # Plot 1 – Revenue vs. Costs Breakdown + Net Profit Marker            #
+    # ------------------------------------------------------------------ #
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
+    w = 0.45
+
+    ax.bar(x, rev.values, w, label="Revenue", color="#2ecc71", zorder=3)
+    ax.bar(x, -cap.values, w, label="CAPEX", color="#e74c3c", zorder=3)
+    ax.bar(x, -fop.values, w, label="Fixed OPEX", color="#e67e22",
+           bottom=-cap.values, zorder=3)
+    ax.bar(x, -vop.values, w, label="Var. OPEX", color="#f39c12",
+           bottom=(-cap - fop).values, zorder=3)
+    ax.plot(x, pro.values, "D", color="#2c3e50", markersize=9,
+            label="Net Profit", zorder=4, clip_on=False)
+    ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_ylabel("Discounted value [model money units]")
+    ax.set_title(f"Investment Profitability Breakdown per Technology / Node ({year})")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    plt.tight_layout()
+    p1 = out / f"profitability_breakdown_{year}.png"
+    fig.savefig(p1, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {p1}")
+
+    # ------------------------------------------------------------------ #
+    # Plot 2 – Net Profitability Bar Chart                                #
+    # ------------------------------------------------------------------ #
+    bar_colors = ["#27ae60" if v >= 0 else "#c0392b" for v in pro.values]
+    fig, ax = plt.subplots(figsize=(fig_width, 5))
+    bars = ax.bar(x, pro.values, color=bar_colors, edgecolor="white", zorder=3)
+    ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
+
+    value_range = max(abs(pro.values)) if len(pro) else 1
+    offset = value_range * 0.02
+    for bar, val in zip(bars, pro.values):
+        y = val + offset if val >= 0 else val - offset
+        va = "bottom" if val >= 0 else "top"
+        ax.text(bar.get_x() + bar.get_width() / 2, y,
+                f"{val:,.0f}", ha="center", va=va, fontsize=7.5, fontweight="bold")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=8)
+    ax.set_ylabel("Net Discounted Profit [model money units]")
+    ax.set_title(f"Net Investment Profitability per Technology / Node ({year})")
+    handles = [
+        mpatches.Patch(color="#27ae60", label="Profitable"),
+        mpatches.Patch(color="#c0392b", label="Loss"),
+    ]
+    ax.legend(handles=handles, fontsize=8)
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+    plt.tight_layout()
+    p2 = out / f"profitability_net_{year}.png"
+    fig.savefig(p2, dpi=150)
+    plt.close(fig)
+    print(f"Saved: {p2}")
+
