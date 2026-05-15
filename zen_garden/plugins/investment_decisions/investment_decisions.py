@@ -299,7 +299,6 @@ def get_flow_reference_carrier(optimization_setup) -> pd.Series:
     )["spec"]
     result.name = "specific_ref_flow_per_gw"
 
-    ref_summary = "\n".join(f"  {t}: {c}" for t, c in tech_ref_map.items())
     return result
 
 def get_shadow_price(optimization_setup) -> pd.Series | None:
@@ -476,7 +475,7 @@ def calculate_revenue(optimization_setup) -> pd.Series:
     return revenue
 
 def get_capex(optimization_setup) -> pd.Series:
-    """Total annualized CAPEX [MEUR] for the capacity additions returned by
+    """Total upfront (overnight) investment cost [MEUR] for the capacity additions returned by
     ``_capacity_addition``, for conversion technologies only.
 
     Reads CAPEX data directly from ``optimization_setup`` and supports both:
@@ -490,7 +489,7 @@ def get_capex(optimization_setup) -> pd.Series:
 
     Returns:
         ``pd.Series`` indexed by ``(set_conversion_technologies, set_nodes)``
-        with the annualised CAPEX in model money units.  
+        with the upfront investment cost in model money units.
     """
     from zen_garden.model.technology.conversion_technology import ConversionTechnology
 
@@ -561,10 +560,10 @@ def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
     """Total fixed OPEX [MEUR] for the capacity additions  returned by
     ``_capacity_addition`` discounted to the decision year, for conversion technologies only.
 
-    Extrects fixed OPEX data from ``optimization_setup`` and uses the same capacity addition and investment delay principle as in the revenue calculation. 
+    Extracts fixed OPEX data from ``optimization_setup`` and uses the same capacity addition and investment delay principle as in the revenue calculation.
 
     Dataflow:
-    - extract fixed OPEX specific to conversion technologies for all years available in the dataset. For years where no data is available, the value for the latest available year is used.
+    - extract the fixed OPEX of the decision year (the latest year in ``set_time_steps_yearly``); this value is assumed constant for every year of the technology lifetime.
     - apply the same capacity_addition and investment delay principle as in the revenue calculation to calculate the discounted fixed OPEX for each technology and node.
     - The fixed OPEX are discounted to the decision year using the discount rate from ``get_discount_rate`` and the investment delay from ``_get_investment_delay`` over the lifetime of the respective technology.
     - The result is printed and returned as a pandas Series indexed by (``set_conversion_technologies``, ``set_nodes``) with the discounted fixed OPEX in model money units.
@@ -611,7 +610,10 @@ def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
             r = float(discount_rate.loc[(tech, node)])
             total = 0.0
 
-            opex_val = float(opex_series.loc[(tech, node, base_year)])            
+            try:
+                opex_val = float(opex_series.loc[(tech, node, base_year)])
+            except KeyError:
+                continue
 
             for offset in range(delay, tech_lifetime + delay):
                 total += opex_val / (1 + r) ** offset
@@ -627,7 +629,7 @@ def get_variable_opex_discounted(optimization_setup) -> pd.Series:
     Extracts variable OPEX data from ``optimization_setup`` and uses the same capacity addition and investment delay principle as in the revenue calculation. 
 
     Dataflow:
-    - extract variable OPEX [EUR/MWh] specific to conversion technologies for all years available in the dataset. For years where no data is available, the value for the latest available year is used.
+    - extract the variable OPEX [EUR/MWh] of the decision year (the latest year in ``set_time_steps_yearly``); this value is assumed constant for every year of the technology lifetime.
     - Obtain the actual cost by multiplying the variable OPEX with the specific production per GW installed capacity and the capacity addition for each technology and node. 
     - apply the same investment delay principle as in the revenue calculation to calculate the discounted variable OPEX for each technology and node.
     - The variable OPEX are discounted to the decision year using the discount rate from ``get_discount_rate`` and the investment delay from ``_get_investment_delay`` over the lifetime of the respective technology.
@@ -692,8 +694,10 @@ def get_variable_opex_discounted(optimization_setup) -> pd.Series:
             r = float(discount_rate.loc[(tech, node)])
             total = 0.0
 
-            opex_val = float(annual_var_opex.loc[(tech, node, base_year)])
-            
+            try:
+                opex_val = float(annual_var_opex.loc[(tech, node, base_year)])
+            except KeyError:
+                continue
 
             for offset in range(delay, tech_lifetime + delay):
                 total += opex_val / (1 + r) ** offset
@@ -788,13 +792,180 @@ def calculate_input_carrier_cost(optimization_setup) -> pd.Series:
 
     return result
 
+def get_tech_co2_cost_discounted(optimization_setup) -> pd.Series:
+    """Discounted lifetime CO2 emission cost for the capacity addition returned by
+    ``_capacity_addition``, for conversion technologies only.
+
+    Mirrors ``get_variable_opex_discounted``, but multiplies the specific
+    reference-carrier flow by ``carbon_intensity_technology`` [tCO2/MWh] and
+    ``price_carbon_emissions`` [EUR/tCO2] of the base year.
+    """
+    sets = optimization_setup.sets
+    parameters = optimization_setup.parameters
+
+    techs = list(sets["set_conversion_technologies"])
+    nodes = list(sets["set_nodes"])
+    time_steps = optimization_setup.energy_system.time_steps
+    op2year = pd.Series(time_steps.time_steps_operation2year)
+    op_level = "set_time_steps_operation"
+    base_year = max(sets["set_time_steps_yearly"])
+
+    # carbon intensity [tCO2/MWh] per (tech, node) — no time dimension in ZEN-Garden
+    carbon_intensity = parameters.carbon_intensity_technology.to_series().dropna()
+    if "set_location" in carbon_intensity.index.names:
+        carbon_intensity.index = carbon_intensity.index.rename(
+            {"set_location": "set_nodes"}
+        )
+    carbon_intensity = carbon_intensity[
+        carbon_intensity.index.get_level_values("set_technologies").isin(techs)
+    ]
+
+    # CO2 price [EUR/tCO2] at base year
+    price_co2 = parameters.price_carbon_emissions.to_series().dropna()
+    price_co2_base = float(price_co2.loc[base_year])
+
+    # Specific reference flow per GW [MWh/GW per time step]
+    ref_flow = get_flow_reference_carrier(optimization_setup)
+    if ref_flow.empty:
+        return pd.Series(dtype=float, name="co2_cost_discounted")
+    ref_flow = ref_flow.droplevel("reference_carrier")
+
+    # [MWh/GW] * [tCO2/MWh] * [EUR/tCO2] = [EUR/GW] per time step, then sum per year
+    ref_flow_df = ref_flow.rename("ref_flow").reset_index()
+    ci_df = carbon_intensity.rename("ci").reset_index()
+    product_df = ref_flow_df.merge(
+        ci_df, on=["set_technologies", "set_nodes"], how="inner"
+    )
+    product_df["cost"] = (
+        product_df["ref_flow"] * product_df["ci"] * price_co2_base
+    )
+    product_df["set_time_steps_yearly"] = product_df[op_level].map(op2year)
+
+    annual_co2_cost = (
+        product_df
+        .groupby(["set_technologies", "set_nodes", "set_time_steps_yearly"])["cost"]
+        .sum()
+    )
+
+    discount_rate = get_discount_rate(optimization_setup)
+    lifetime = get_lifetime(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition = _capacity_addition(optimization_setup)
+
+    idx = pd.MultiIndex.from_product(
+        [techs, nodes],
+        names=["set_conversion_technologies", "set_nodes"],
+    )
+    result = pd.Series(0.0, index=idx, name="co2_cost_discounted")
+
+    for tech in techs:
+        if pd.isna(lifetime.get(tech, np.nan)):
+            continue
+        tech_lifetime = int(lifetime[tech])
+        delay = int(investment_delay[tech])
+        cap = float(capacity_addition[tech])
+
+        for node in nodes:
+            r = float(discount_rate.loc[(tech, node)])
+            try:
+                co2_val = float(annual_co2_cost.loc[(tech, node, base_year)])
+            except KeyError:
+                continue  # tech has no emissions at this node
+
+            total = sum(
+                co2_val / (1 + r) ** offset
+                for offset in range(delay, tech_lifetime + delay)
+            )
+            result.loc[(tech, node)] = cap * total
+
+    return result
+
+def get_carrier_co2_cost_discounted(optimization_setup) -> pd.Series:
+    """Discounted lifetime CO2 cost from input carriers for the capacity addition
+    returned by ``_capacity_addition``, for conversion technologies only.
+
+    Analogous to ``calculate_input_carrier_cost``, but multiplies the specific
+    input-carrier flow by ``carbon_intensity_carrier_import`` [tCO2/MWh] and the
+    base-year ``price_carbon_emissions`` [EUR/tCO2]. Captures upstream/import
+    emissions associated with the carriers a technology consumes — complementary
+    to the direct technology emissions in ``get_tech_co2_cost_discounted``.
+    """
+    sets = optimization_setup.sets
+    parameters = optimization_setup.parameters
+
+    base_year = max(sets["set_time_steps_yearly"])
+
+    # carbon intensity of carrier import [tCO2/MWh] per (carrier, node), base year
+    carrier_ci = parameters.carbon_intensity_carrier_import.to_series().dropna()
+    if "set_location" in carrier_ci.index.names:
+        carrier_ci.index = carrier_ci.index.rename({"set_location": "set_nodes"})
+    for year_level in ("set_time_steps_yearly", "year"):
+        if year_level in carrier_ci.index.names:
+            carrier_ci = carrier_ci.xs(base_year, level=year_level)
+            break
+
+    # CO2 price [EUR/tCO2] at base year
+    price_co2 = parameters.price_carbon_emissions.to_series().dropna()
+    price_co2_base = float(price_co2.loc[base_year])
+
+    # specific input-carrier flow per GW [MWh/GW per time step]
+    input_flow = get_flow_input_carrier(optimization_setup)
+    if input_flow.empty:
+        return pd.Series(dtype=float, name="carrier_co2_cost_discounted")
+
+    # [MWh/GW] * [tCO2/MWh] * [EUR/tCO2] = [EUR/GW] per time step, then sum over time
+    flow_df = input_flow.rename("flow").reset_index()
+    ci_df = carrier_ci.rename("ci").reset_index().rename(
+        columns={"set_carriers": "set_input_carriers"}
+    )
+    merged = flow_df.merge(
+        ci_df, on=["set_input_carriers", "set_nodes"], how="inner"
+    )
+    if merged.empty:
+        return pd.Series(dtype=float, name="carrier_co2_cost_discounted")
+
+    merged["cost"] = merged["flow"] * merged["ci"] * price_co2_base
+
+    annual_cost = (
+        merged
+        .groupby(["set_technologies", "set_input_carriers", "set_nodes"])["cost"]
+        .sum()
+    )
+
+    discount_rate = get_discount_rate(optimization_setup)
+    lifetime = get_lifetime(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition_gw = _capacity_addition(optimization_setup)
+
+    group_index = annual_cost.index
+    result = pd.Series(0.0, index=group_index, name="carrier_co2_cost_discounted")
+
+    for tech, carrier, node in group_index:
+        if pd.isna(lifetime.get(tech, np.nan)):
+            continue
+        tech_lifetime = int(lifetime[tech])
+        delay = int(investment_delay[tech])
+        capacity = float(capacity_addition_gw[tech])
+        r = float(discount_rate.loc[(tech, node)])
+        val = annual_cost.loc[(tech, carrier, node)]
+        if pd.isna(val):
+            continue
+        total = sum(
+            float(val) / (1 + r) ** offset
+            for offset in range(delay, tech_lifetime + delay)
+        )
+        result.loc[(tech, carrier, node)] = capacity * total
+
+    return result
+
 
 # profitability calculation
 def calculate_profitability(optimization_setup) -> pd.Series:
     """Calculate profitability of the capacity addition as revenue minus costs.
 
-    Costs include both CAPEX and OPEX (fixed and variable).  The same capacity
-    addition, investment delay and discounting principles are applied as in the
+    Costs include CAPEX, OPEX (fixed and variable), input-carrier cost and CO2
+    emission cost (technology and carrier).  The same capacity addition,
+    investment delay and discounting principles are applied as in the
     revenue and cost calculations.
 
     Returns:
@@ -806,6 +977,8 @@ def calculate_profitability(optimization_setup) -> pd.Series:
     fixed_opex = get_fixed_opex_discounted(optimization_setup)
     variable_opex = get_variable_opex_discounted(optimization_setup)
     input_carrier_cost = calculate_input_carrier_cost(optimization_setup)
+    tech_co2_cost = get_tech_co2_cost_discounted(optimization_setup)
+    carrier_co2_cost = get_carrier_co2_cost_discounted(optimization_setup)
 
     # revenue and input_carrier_cost are indexed by (set_technologies, *_carriers, set_nodes);
     # sum over carriers and rename to match the (set_conversion_technologies, set_nodes) index.
@@ -821,18 +994,27 @@ def calculate_profitability(optimization_setup) -> pd.Series:
         .sum()
         .rename_axis(index={"set_technologies": "set_conversion_technologies"})
     )
+    carrier_co2_cost_by_tech_node = (
+        carrier_co2_cost
+        .groupby(level=["set_technologies", "set_nodes"])
+        .sum()
+        .rename_axis(index={"set_technologies": "set_conversion_technologies"})
+    )
 
     profitability = revenue_by_tech_node.subtract(capex, fill_value=0)
     profitability = profitability.subtract(fixed_opex, fill_value=0)
     profitability = profitability.subtract(variable_opex, fill_value=0)
     profitability = profitability.subtract(input_carrier_cost_by_tech_node, fill_value=0)
+    profitability = profitability.subtract(tech_co2_cost, fill_value=0)
+    profitability = profitability.subtract(carrier_co2_cost_by_tech_node, fill_value=0)
     profitability.name = "profitability"
 
     print(
         f"\n--- Profitability of Capacity Additions ---\n"
         f"{'Tech / Node':<45} {'Revenue':>12} {'CAPEX':>12} "
-        f"{'Fixed OPEX':>12} {'Var OPEX':>12} {'Input Cost':>12} {'Profit':>12}\n"
-        + "-" * 117
+        f"{'Fixed OPEX':>12} {'Var OPEX':>12} {'Input Cost':>12} "
+        f"{'Tech CO2':>12} {'Carrier CO2':>12} {'Profit':>12}\n"
+        + "-" * 149
     )
     for idx in profitability.index:
         rev_val = revenue_by_tech_node.get(idx, 0.0)
@@ -840,10 +1022,13 @@ def calculate_profitability(optimization_setup) -> pd.Series:
         fop_val = fixed_opex.get(idx, 0.0)
         vop_val = variable_opex.get(idx, 0.0)
         icc_val = input_carrier_cost_by_tech_node.get(idx, 0.0)
+        tco2_val = tech_co2_cost.get(idx, 0.0)
+        cco2_val = carrier_co2_cost_by_tech_node.get(idx, 0.0)
         pro_val = profitability[idx]
         print(
             f"{str(idx):<45} {rev_val:>12.2f} {cap_val:>12.2f} "
-            f"{fop_val:>12.2f} {vop_val:>12.2f} {icc_val:>12.2f} {pro_val:>12.2f}"
+            f"{fop_val:>12.2f} {vop_val:>12.2f} {icc_val:>12.2f} "
+            f"{tco2_val:>12.2f} {cco2_val:>12.2f} {pro_val:>12.2f}"
         )
     print()
     return profitability
@@ -896,6 +1081,8 @@ def visualization(
     fop = get_fixed_opex_discounted(optimization_setup).reindex(idx, fill_value=0)
     vop = get_variable_opex_discounted(optimization_setup).reindex(idx, fill_value=0)
     icc = _by_tech_node(calculate_input_carrier_cost(optimization_setup))
+    tco2 = get_tech_co2_cost_discounted(optimization_setup).reindex(idx, fill_value=0)
+    cco2 = _by_tech_node(get_carrier_co2_cost_discounted(optimization_setup))
 
     labels = [f"{t}\n{n}" for t, n in idx]
     x = list(range(len(labels)))
@@ -915,6 +1102,10 @@ def visualization(
            bottom=(-cap - fop).values, zorder=3)
     ax.bar(x, -icc.values, w, label="Input Cost", color="#9b59b6",
            bottom=(-cap - fop - vop).values, zorder=3)
+    ax.bar(x, -tco2.values, w, label="Tech CO2", color="#7f8c8d",
+           bottom=(-cap - fop - vop - icc).values, zorder=3)
+    ax.bar(x, -cco2.values, w, label="Carrier CO2", color="#34495e",
+           bottom=(-cap - fop - vop - icc - tco2).values, zorder=3)
     ax.plot(x, pro.values, "D", color="#2c3e50", markersize=9,
             label="Net Profit", zorder=4, clip_on=False)
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
