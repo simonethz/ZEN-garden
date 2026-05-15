@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 
-#helper functions
+# general helper functions
 def _normalize_interval(optimization_setup):
     """interval between the optimized years for normalizing the dual variables ``.
     """
@@ -120,10 +120,6 @@ def extract_normalized_dual(optimization_setup):
     )
     df_duals = df_duals.div(durations, axis=1)
    
-    logging.info(
-        "\n--- Normalized shadow prices per aggregated operational time step ---\n"
-        f"{df_duals}\n"
-    )
     return df_duals
 
 def extract_shadow_prices_full_ts(optimization_setup):
@@ -304,11 +300,6 @@ def get_flow_reference_carrier(optimization_setup) -> pd.Series:
     result.name = "specific_ref_flow_per_gw"
 
     ref_summary = "\n".join(f"  {t}: {c}" for t, c in tech_ref_map.items())
-    print(
-        f"\n--- Specific reference carrier flow per GW [MWh/GW] ---\n"
-        f"Reference carriers used:\n{ref_summary}\n\n"
-        f"{result}\n"
-    )
     return result
 
 def get_shadow_price(optimization_setup) -> pd.Series | None:
@@ -347,6 +338,71 @@ def get_shadow_price(optimization_setup) -> pd.Series | None:
     )["shadow_price"]
     return mapped_shadow_price
 
+def get_flow_input_carrier(optimization_setup) -> pd.Series:
+    """Input carrier flow per GW installed capacity per aggregated operational time step.
+
+    For each conversion technology, input carrier, node and aggregated
+    operational time step ``t``, returns::
+
+        flow_conversion_input[t] * time_steps_operation_duration[t]
+            / capacity[year(t)]
+
+    Technologies without an input carrier do not appear in the index; callers
+    should treat missing entries as 0.
+
+    Returns:
+        pandas.Series indexed by
+        (``set_technologies``, ``set_input_carriers``, ``set_nodes``,
+        ``set_time_steps_operation``). 0 where capacity is zero.
+    """
+    sets = optimization_setup.sets
+    techs = list(sets["set_conversion_technologies"])
+    time_steps = optimization_setup.energy_system.time_steps
+    op2year = pd.Series(time_steps.time_steps_operation2year)
+    durations = pd.Series(time_steps.time_steps_operation_duration)
+    op_level = "set_time_steps_operation"
+
+    flow = optimization_setup.model.solution["flow_conversion_input"].to_series().dropna()
+    flow = flow[flow.index.get_level_values("set_conversion_technologies").isin(techs)]
+    flow.index = flow.index.rename({"set_conversion_technologies": "set_technologies"})
+    if "set_location" in flow.index.names:
+        flow.index = flow.index.rename({"set_location": "set_nodes"})
+
+    if flow.empty:
+        return pd.Series(dtype=float, name="specific_input_flow_per_gw")
+
+    # Weight by duration: [energy/time] → [energy] per time-step interval
+    flow = flow.mul(flow.index.get_level_values(op_level).map(durations))
+
+    capacity = (
+        optimization_setup.model.solution["capacity"]
+        .sum("set_capacity_types")
+        .to_series()
+        .dropna()
+    )
+    capacity = capacity[capacity.index.get_level_values("set_technologies").isin(techs)]
+    if "set_location" in capacity.index.names:
+        capacity.index = capacity.index.rename({"set_location": "set_nodes"})
+
+    flow_df = flow.to_frame("flow_energy").reset_index()
+    flow_df["set_time_steps_yearly"] = flow_df[op_level].map(op2year)
+    cap_df = capacity.to_frame("capacity").reset_index()
+
+    merged = flow_df.merge(
+        cap_df,
+        on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
+        how="left",
+    )
+    merged["spec"] = (
+        (merged["flow_energy"] / merged["capacity"])
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+    result = merged.set_index(
+        ["set_technologies", "set_input_carriers", "set_nodes", op_level]
+    )["spec"]
+    result.name = "specific_input_flow_per_gw"
+    return result
 
 # revenue and cost calculations
 def calculate_revenue(optimization_setup) -> pd.Series:
@@ -395,13 +451,6 @@ def calculate_revenue(optimization_setup) -> pd.Series:
         )["prod_revenue"].sum()
     )
 
-    logging.info(
-        "\n--- Revenue calculation inputs ---\n"
-        f"Lifetimes per tech (years):\n{lifetime}\n\n"
-        f"Specific production per (tech, oc, node, t):\n{spec_prod}\n\n"
-        f"Annual revenue (spec_prod * shadow_price summed over t) per "
-        f"(tech, oc, node):\n{annual_rev}\n"
-    )
 
     group_index = annual_rev.index
 
@@ -505,7 +554,6 @@ def get_capex(optimization_setup) -> pd.Series:
         )["capex"]
         result.name = "capex"
 
-    print(f"\n--- CAPEX für Kapazitätszubau (annualisiert) ---\n{result}\n")
    
     return result
 
@@ -570,7 +618,6 @@ def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
 
             result.loc[(tech, node)] = cap * total
 
-    print(f"\n--- Discounted Fixed OPEX for Capacity Additions ---\n{result}\n")
     return result
 
 def get_variable_opex_discounted(optimization_setup) -> pd.Series:
@@ -616,8 +663,7 @@ def get_variable_opex_discounted(optimization_setup) -> pd.Series:
     )
     product_df["cost"] = product_df["opex_var"] * product_df["ref_flow"]
     product_df["set_time_steps_yearly"] = product_df[op_level].map(op2year)
-    with pd.option_context("display.max_rows", None, "display.max_columns", None, "display.width", None):
-        print(f"\n--- product_df (alle Einträge) ---\n{product_df}\n")
+    
     annual_var_opex = (
         product_df
         .groupby(["set_technologies", "set_nodes", "set_time_steps_yearly"])["cost"]
@@ -654,7 +700,92 @@ def get_variable_opex_discounted(optimization_setup) -> pd.Series:
 
             result.loc[(tech, node)] = cap * total
 
-    print(f"\n--- Discounted Variable OPEX for Capacity Additions ---\n{result}\n")
+    return result
+
+def calculate_input_carrier_cost(optimization_setup) -> pd.Series:
+    """Discounted lifetime input carrier cost for a hypothetical capacity addition.
+
+    Analogous to ``calculate_revenue`` but for input carriers instead of output
+    carriers. The shadow price of each input carrier at each node serves as the
+    fuel/energy price.
+
+    Per (conversion technology, input carrier, node), the formula is::
+
+        cost = capacity_addition_gw
+               * Σ_{n=delay..lifetime+delay-1} (
+                     annual_cost[tech, ic, node]
+                     / (1 + r) ** n
+                 )
+
+        where annual_cost[tech, ic, node]
+            = Σ_{t in aggregated time steps} (
+                  shadow_price[ic, node, t]
+                  * specific_input_flow[tech, ic, node, t]
+              )
+
+    Returns:
+        pandas.Series indexed by
+        (``set_technologies``, ``set_input_carriers``, ``set_nodes``) with
+        the discounted input carrier cost in the model's money unit.
+    """
+    discount_rate = get_discount_rate(optimization_setup)
+    lifetime = get_lifetime(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition_gw = _capacity_addition(optimization_setup)
+
+    input_flow = get_flow_input_carrier(optimization_setup)
+    if input_flow.empty:
+        print("\n--- Input carrier cost skipped: no input flow data ---\n")
+        return pd.Series(dtype=float, name="discounted_input_carrier_cost")
+
+    duals = extract_normalized_dual(optimization_setup)
+    if duals is None:
+        print("\n--- Input carrier cost skipped: no dual variables available ---\n")
+        return pd.Series(dtype=float, name="discounted_input_carrier_cost")
+
+    # Stack duals to (set_carriers, set_nodes, set_time_steps_operation)
+    carrier_prices = duals.stack().dropna()
+    carrier_prices.name = "carrier_price"
+
+    flow_df = input_flow.reset_index()
+    prices_df = carrier_prices.reset_index()
+
+    merged = flow_df.merge(
+        prices_df,
+        left_on=["set_input_carriers", "set_nodes", "set_time_steps_operation"],
+        right_on=["set_carriers", "set_nodes", "set_time_steps_operation"],
+        how="inner",
+    )
+    merged["cost"] = merged["specific_input_flow_per_gw"] * merged["carrier_price"]
+
+    annual_cost = (
+        merged.groupby(["set_technologies", "set_input_carriers", "set_nodes"])["cost"]
+        .sum()
+    )
+
+    if annual_cost.empty:
+        print("\n--- Input carrier cost skipped: no matching carrier prices ---\n")
+        return pd.Series(dtype=float, name="discounted_input_carrier_cost")
+
+    group_index = annual_cost.index
+    result = pd.Series(0.0, index=group_index, name="discounted_input_carrier_cost")
+
+    for tech, carrier, node in group_index:
+        if pd.isna(lifetime.get(tech, np.nan)):
+            continue
+        tech_lifetime = int(lifetime[tech])
+        delay = int(investment_delay[tech])
+        capacity = float(capacity_addition_gw[tech])
+        r = float(discount_rate.loc[(tech, node)])
+        val = annual_cost.loc[(tech, carrier, node)]
+        if pd.isna(val):
+            continue
+        total = sum(
+            float(val) / (1 + r) ** offset
+            for offset in range(delay, tech_lifetime + delay)
+        )
+        result.loc[(tech, carrier, node)] = capacity * total
+
     return result
 
 
@@ -674,11 +805,18 @@ def calculate_profitability(optimization_setup) -> pd.Series:
     capex = get_capex(optimization_setup)
     fixed_opex = get_fixed_opex_discounted(optimization_setup)
     variable_opex = get_variable_opex_discounted(optimization_setup)
+    input_carrier_cost = calculate_input_carrier_cost(optimization_setup)
 
-    # revenue is indexed by (set_technologies, set_output_carriers, set_nodes);
-    # sum over output carriers and rename to match the cost index names.
+    # revenue and input_carrier_cost are indexed by (set_technologies, *_carriers, set_nodes);
+    # sum over carriers and rename to match the (set_conversion_technologies, set_nodes) index.
     revenue_by_tech_node = (
         revenue
+        .groupby(level=["set_technologies", "set_nodes"])
+        .sum()
+        .rename_axis(index={"set_technologies": "set_conversion_technologies"})
+    )
+    input_carrier_cost_by_tech_node = (
+        input_carrier_cost
         .groupby(level=["set_technologies", "set_nodes"])
         .sum()
         .rename_axis(index={"set_technologies": "set_conversion_technologies"})
@@ -687,23 +825,25 @@ def calculate_profitability(optimization_setup) -> pd.Series:
     profitability = revenue_by_tech_node.subtract(capex, fill_value=0)
     profitability = profitability.subtract(fixed_opex, fill_value=0)
     profitability = profitability.subtract(variable_opex, fill_value=0)
+    profitability = profitability.subtract(input_carrier_cost_by_tech_node, fill_value=0)
     profitability.name = "profitability"
 
     print(
         f"\n--- Profitability of Capacity Additions ---\n"
         f"{'Tech / Node':<45} {'Revenue':>12} {'CAPEX':>12} "
-        f"{'Fixed OPEX':>12} {'Var OPEX':>12} {'Profit':>12}\n"
-        + "-" * 105
+        f"{'Fixed OPEX':>12} {'Var OPEX':>12} {'Input Cost':>12} {'Profit':>12}\n"
+        + "-" * 117
     )
     for idx in profitability.index:
         rev_val = revenue_by_tech_node.get(idx, 0.0)
         cap_val = capex.get(idx, 0.0)
         fop_val = fixed_opex.get(idx, 0.0)
         vop_val = variable_opex.get(idx, 0.0)
+        icc_val = input_carrier_cost_by_tech_node.get(idx, 0.0)
         pro_val = profitability[idx]
         print(
             f"{str(idx):<45} {rev_val:>12.2f} {cap_val:>12.2f} "
-            f"{fop_val:>12.2f} {vop_val:>12.2f} {pro_val:>12.2f}"
+            f"{fop_val:>12.2f} {vop_val:>12.2f} {icc_val:>12.2f} {pro_val:>12.2f}"
         )
     print()
     return profitability
@@ -733,37 +873,29 @@ def visualization(
 
     year = max(optimization_setup.sets["set_time_steps_yearly"])
 
-    # --- collect component data ---
-    revenue = calculate_revenue(optimization_setup)
-    capex = get_capex(optimization_setup)
-    fixed_opex = get_fixed_opex_discounted(optimization_setup)
-    variable_opex = get_variable_opex_discounted(optimization_setup)
+    # --- net profitability via central function ---
+    pro = calculate_profitability(optimization_setup)
 
-    revenue_by_tech_node = (
-        revenue
-        .groupby(level=["set_technologies", "set_nodes"])
-        .sum()
-        .rename_axis(index={"set_technologies": "set_conversion_technologies"})
-    )
-
-    profitability = (
-        revenue_by_tech_node
-        .subtract(capex, fill_value=0)
-        .subtract(fixed_opex, fill_value=0)
-        .subtract(variable_opex, fill_value=0)
-    )
-    profitability.name = "profitability"
-
-    idx = profitability.index
+    idx = pro.index
     if idx.empty:
         print("visualization: keine Profitabilitätsdaten vorhanden, Diagramme werden übersprungen.")
         return
 
-    rev = revenue_by_tech_node.reindex(idx, fill_value=0)
-    cap = capex.reindex(idx, fill_value=0)
-    fop = fixed_opex.reindex(idx, fill_value=0)
-    vop = variable_opex.reindex(idx, fill_value=0)
-    pro = profitability
+    # --- individual cost/revenue components for the breakdown chart ---
+    def _by_tech_node(series):
+        return (
+            series
+            .groupby(level=["set_technologies", "set_nodes"])
+            .sum()
+            .rename_axis(index={"set_technologies": "set_conversion_technologies"})
+            .reindex(idx, fill_value=0)
+        )
+
+    rev = _by_tech_node(calculate_revenue(optimization_setup))
+    cap = get_capex(optimization_setup).reindex(idx, fill_value=0)
+    fop = get_fixed_opex_discounted(optimization_setup).reindex(idx, fill_value=0)
+    vop = get_variable_opex_discounted(optimization_setup).reindex(idx, fill_value=0)
+    icc = _by_tech_node(calculate_input_carrier_cost(optimization_setup))
 
     labels = [f"{t}\n{n}" for t, n in idx]
     x = list(range(len(labels)))
@@ -781,6 +913,8 @@ def visualization(
            bottom=-cap.values, zorder=3)
     ax.bar(x, -vop.values, w, label="Var. OPEX", color="#f39c12",
            bottom=(-cap - fop).values, zorder=3)
+    ax.bar(x, -icc.values, w, label="Input Cost", color="#9b59b6",
+           bottom=(-cap - fop - vop).values, zorder=3)
     ax.plot(x, pro.values, "D", color="#2c3e50", markersize=9,
             label="Net Profit", zorder=4, clip_on=False)
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
@@ -806,9 +940,9 @@ def visualization(
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
 
     value_range = max(abs(pro.values)) if len(pro) else 1
-    offset = value_range * 0.02
+    bar_offset = value_range * 0.02
     for bar, val in zip(bars, pro.values):
-        y = val + offset if val >= 0 else val - offset
+        y = val + bar_offset if val >= 0 else val - bar_offset
         va = "bottom" if val >= 0 else "top"
         ax.text(bar.get_x() + bar.get_width() / 2, y,
                 f"{val:,.0f}", ha="center", va=va, fontsize=7.5, fontweight="bold")
