@@ -6,6 +6,13 @@ import numpy as np
 import pandas as pd
 
 
+# Capacities below this threshold [GW] are treated as "not installed" when
+# normalizing flows per GW. Dividing a flow by a tiny but non-zero capacity
+# (numerical solver residual or marginally-used technology) would otherwise
+# produce absurdly large specific values that propagate into revenue/cost.
+CAPACITY_FLOOR_GW = 1e-2
+
+
 # general helper functions
 def _normalize_interval(optimization_setup):
     """interval between the optimized years for normalizing the dual variables ``.
@@ -200,9 +207,10 @@ def get_specific_production(optimization_setup) -> pd.Series:
         on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
         how="left",
     )
-    merged["spec"] = (
-        (merged["flow_energy"] / merged["capacity"])
-        .replace([np.inf, -np.inf], np.nan)
+    merged["spec"] = np.where(
+        merged["capacity"] > CAPACITY_FLOOR_GW,
+        merged["flow_energy"] / merged["capacity"],
+        np.nan,
     )
     result = merged.set_index(
         ["set_technologies", "set_output_carriers", "set_nodes", op_level]
@@ -289,9 +297,10 @@ def get_flow_reference_carrier(optimization_setup) -> pd.Series:
         on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
         how="left",
     )
-    merged["spec"] = (
-        (merged["flow_energy"] / merged["capacity"])
-        .replace([np.inf, -np.inf], np.nan)
+    merged["spec"] = np.where(
+        merged["capacity"] > CAPACITY_FLOOR_GW,
+        merged["flow_energy"] / merged["capacity"],
+        np.nan,
     )
     merged["reference_carrier"] = merged["set_technologies"].map(tech_ref_map)
     result = merged.set_index(
@@ -336,7 +345,7 @@ def get_shadow_price(optimization_setup) -> pd.Series | None:
         ]
     )["shadow_price"]
     return mapped_shadow_price
-
+ 
 def get_flow_input_carrier(optimization_setup) -> pd.Series:
     """Input carrier flow per GW installed capacity per aggregated operational time step.
 
@@ -392,11 +401,12 @@ def get_flow_input_carrier(optimization_setup) -> pd.Series:
         on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
         how="left",
     )
-    merged["spec"] = (
-        (merged["flow_energy"] / merged["capacity"])
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0.0)
+    merged["spec"] = np.where(
+        merged["capacity"] > CAPACITY_FLOOR_GW,
+        merged["flow_energy"] / merged["capacity"],
+        np.nan,
     )
+    merged["spec"] = merged["spec"].fillna(0.0)
     result = merged.set_index(
         ["set_technologies", "set_input_carriers", "set_nodes", op_level]
     )["spec"]
@@ -1041,11 +1051,15 @@ def visualization(
 ) -> None:
     """Generate and save investment-decision visualizations.
 
-    Saves two plot types to ``output_dir``, each suffixed with the current
-    calendar year so runs for different optimization periods do not overwrite
-    each other:
-    - ``profitability_breakdown_<year>.png``: revenue vs. stacked costs + net-profit marker per tech/node
-    - ``profitability_net_<year>.png``: net profit bar chart, color-coded profitable / loss
+    Saves two plot types **per output carrier** to ``output_dir``: one pair of
+    charts for every output carrier, listing all (technology, node) pairs whose
+    technology produces that carrier. A technology with several output carriers
+    therefore appears in several carrier charts (with the same profitability,
+    since CAPEX/OPEX/CO2 costs are not carrier-specific). Each file name is
+    suffixed with the carrier and the current calendar year so runs for
+    different carriers / optimization periods do not overwrite each other:
+    - ``profitability_breakdown_<carrier>_<year>.png``: revenue vs. stacked costs + net-profit marker per tech/node
+    - ``profitability_net_<carrier>_<year>.png``: net profit bar chart, color-coded profitable / loss
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -1084,73 +1098,106 @@ def visualization(
     tco2 = get_tech_co2_cost_discounted(optimization_setup).reindex(idx, fill_value=0)
     cco2 = _by_tech_node(get_carrier_co2_cost_discounted(optimization_setup))
 
-    labels = [f"{t}\n{n}" for t, n in idx]
-    x = list(range(len(labels)))
-    fig_width = max(9, len(labels) * 1.6)
+    # one pair of charts per output carrier; all (tech, node) pairs whose
+    # technology produces that carrier appear on the x-axis.
+    output_carriers_by_tech = optimization_setup.sets["set_output_carriers"]
+    technologies = list(dict.fromkeys(idx.get_level_values("set_conversion_technologies")))
 
-    # ------------------------------------------------------------------ #
-    # Plot 1 – Revenue vs. Costs Breakdown + Net Profit Marker            #
-    # ------------------------------------------------------------------ #
-    fig, ax = plt.subplots(figsize=(fig_width, 6))
-    w = 0.45
+    carrier_to_techs: dict[str, list[str]] = {}
+    for tech in technologies:
+        for carrier in output_carriers_by_tech[tech]:
+            carrier_to_techs.setdefault(carrier, []).append(tech)
 
-    ax.bar(x, rev.values, w, label="Revenue", color="#2ecc71", zorder=3)
-    ax.bar(x, -cap.values, w, label="CAPEX", color="#e74c3c", zorder=3)
-    ax.bar(x, -fop.values, w, label="Fixed OPEX", color="#e67e22",
-           bottom=-cap.values, zorder=3)
-    ax.bar(x, -vop.values, w, label="Var. OPEX", color="#f39c12",
-           bottom=(-cap - fop).values, zorder=3)
-    ax.bar(x, -icc.values, w, label="Input Cost", color="#9b59b6",
-           bottom=(-cap - fop - vop).values, zorder=3)
-    ax.bar(x, -tco2.values, w, label="Tech CO2", color="#7f8c8d",
-           bottom=(-cap - fop - vop - icc).values, zorder=3)
-    ax.bar(x, -cco2.values, w, label="Carrier CO2", color="#34495e",
-           bottom=(-cap - fop - vop - icc - tco2).values, zorder=3)
-    ax.plot(x, pro.values, "D", color="#2c3e50", markersize=9,
-            label="Net Profit", zorder=4, clip_on=False)
-    ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
+    if not carrier_to_techs:
+        print("visualization: keine Output-Carrier gefunden, Diagramme werden übersprungen.")
+        return
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8)
-    ax.set_ylabel("Discounted value [model money units]")
-    ax.set_title(f"Investment Profitability Breakdown per Technology / Node ({year})")
-    ax.legend(loc="upper right", fontsize=8)
-    ax.grid(axis="y", linestyle=":", alpha=0.5)
-    plt.tight_layout()
-    p1 = out / f"profitability_breakdown_{year}.png"
-    fig.savefig(p1, dpi=150)
-    plt.close(fig)
-    print(f"Saved: {p1}")
+    for carrier, carrier_techs in carrier_to_techs.items():
+        carrier_techs_set = set(carrier_techs)
+        # rows of the shared index whose technology produces this carrier
+        mask = idx.get_level_values("set_conversion_technologies").isin(carrier_techs_set)
+        if not mask.any():
+            continue
 
-    # ------------------------------------------------------------------ #
-    # Plot 2 – Net Profitability Bar Chart                                #
-    # ------------------------------------------------------------------ #
-    bar_colors = ["#27ae60" if v >= 0 else "#c0392b" for v in pro.values]
-    fig, ax = plt.subplots(figsize=(fig_width, 5))
-    bars = ax.bar(x, pro.values, color=bar_colors, edgecolor="white", zorder=3)
-    ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
+        # slice every component down to the current carrier's (tech, node) pairs
+        rev_t = rev[mask]
+        cap_t = cap[mask]
+        fop_t = fop[mask]
+        vop_t = vop[mask]
+        icc_t = icc[mask]
+        tco2_t = tco2[mask]
+        cco2_t = cco2[mask]
+        pro_t = pro[mask]
 
-    value_range = max(abs(pro.values)) if len(pro) else 1
-    bar_offset = value_range * 0.02
-    for bar, val in zip(bars, pro.values):
-        y = val + bar_offset if val >= 0 else val - bar_offset
-        va = "bottom" if val >= 0 else "top"
-        ax.text(bar.get_x() + bar.get_width() / 2, y,
-                f"{val:,.0f}", ha="center", va=va, fontsize=7.5, fontweight="bold")
+        labels = [f"{t}\n{n}" for t, n in pro_t.index]
+        x = list(range(len(labels)))
+        fig_width = max(7, len(labels) * 1.6)
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=8)
-    ax.set_ylabel("Net Discounted Profit [model money units]")
-    ax.set_title(f"Net Investment Profitability per Technology / Node ({year})")
-    handles = [
-        mpatches.Patch(color="#27ae60", label="Profitable"),
-        mpatches.Patch(color="#c0392b", label="Loss"),
-    ]
-    ax.legend(handles=handles, fontsize=8)
-    ax.grid(axis="y", linestyle=":", alpha=0.5)
-    plt.tight_layout()
-    p2 = out / f"profitability_net_{year}.png"
-    fig.savefig(p2, dpi=150)
-    plt.close(fig)
-    print(f"Saved: {p2}")
+        # -------------------------------------------------------------- #
+        # Plot 1 – Revenue vs. Costs Breakdown + Net Profit Marker        #
+        # -------------------------------------------------------------- #
+        fig, ax = plt.subplots(figsize=(fig_width, 6))
+        w = 0.45
+
+        ax.bar(x, rev_t.values, w, label="Revenue", color="#2ecc71", zorder=3)
+        ax.bar(x, -cap_t.values, w, label="CAPEX", color="#e74c3c", zorder=3)
+        ax.bar(x, -fop_t.values, w, label="Fixed OPEX", color="#e67e22",
+               bottom=-cap_t.values, zorder=3)
+        ax.bar(x, -vop_t.values, w, label="Var. OPEX", color="#f39c12",
+               bottom=(-cap_t - fop_t).values, zorder=3)
+        ax.bar(x, -icc_t.values, w, label="Input Cost", color="#9b59b6",
+               bottom=(-cap_t - fop_t - vop_t).values, zorder=3)
+        ax.bar(x, -tco2_t.values, w, label="Tech CO2", color="#7f8c8d",
+               bottom=(-cap_t - fop_t - vop_t - icc_t).values, zorder=3)
+        ax.bar(x, -cco2_t.values, w, label="Carrier CO2", color="#34495e",
+               bottom=(-cap_t - fop_t - vop_t - icc_t - tco2_t).values, zorder=3)
+        ax.plot(x, pro_t.values, "D", color="#2c3e50", markersize=9,
+                label="Net Profit", zorder=4, clip_on=False)
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_xlabel("Technology / Node")
+        ax.set_ylabel("Discounted value [model money units]")
+        ax.set_title(f"Investment Profitability Breakdown – output carrier '{carrier}' ({year})")
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(axis="y", linestyle=":", alpha=0.5)
+        plt.tight_layout()
+        p1 = out / f"profitability_breakdown_{carrier}_{year}.png"
+        fig.savefig(p1, dpi=150)
+        plt.close(fig)
+        print(f"Saved: {p1}")
+
+        # -------------------------------------------------------------- #
+        # Plot 2 – Net Profitability Bar Chart                            #
+        # -------------------------------------------------------------- #
+        bar_colors = ["#27ae60" if v >= 0 else "#c0392b" for v in pro_t.values]
+        fig, ax = plt.subplots(figsize=(fig_width, 5))
+        bars = ax.bar(x, pro_t.values, color=bar_colors, edgecolor="white", zorder=3)
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=2)
+
+        value_range = max(abs(pro_t.values)) if len(pro_t) else 1
+        bar_offset = (value_range or 1) * 0.02
+        for bar, val in zip(bars, pro_t.values):
+            y = val + bar_offset if val >= 0 else val - bar_offset
+            va = "bottom" if val >= 0 else "top"
+            ax.text(bar.get_x() + bar.get_width() / 2, y,
+                    f"{val:,.0f}", ha="center", va=va, fontsize=8, fontweight="bold")
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, fontsize=8)
+        ax.set_xlabel("Technology / Node")
+        ax.set_ylabel("Net Discounted Profit [model money units]")
+        ax.set_title(f"Net Investment Profitability – output carrier '{carrier}' ({year})")
+        handles = [
+            mpatches.Patch(color="#27ae60", label="Profitable"),
+            mpatches.Patch(color="#c0392b", label="Loss"),
+        ]
+        ax.legend(handles=handles, fontsize=8)
+        ax.grid(axis="y", linestyle=":", alpha=0.5)
+        plt.tight_layout()
+        p2 = out / f"profitability_net_{carrier}_{year}.png"
+        fig.savefig(p2, dpi=150)
+        plt.close(fig)
+        print(f"Saved: {p2}")
 

@@ -6,27 +6,41 @@ import pandas as pd
 
 from zen_garden import Results, run
 
-# Candidate dataset roots, tried in order. The first existing one wins, so the
-# script works on both the local and the remote machine without manual edits.
-DATASET_ROOT_CANDIDATES = (
-    Path("D:/Students/ssambale_jwiegner/Crystal-Ball/data"),  # remote
-    Path.home() / "C:\Crystal-Ball-small\data",        # local — adjust as needed
-)
+DATASET = 1 #0 for Crystal-Ball-small remote, 1 for Crystal-Ball full remote, 2 for Crystal-Ball-small local
 
 
 def get_dataset_root() -> Path:
-    """Return the first existing dataset root from ``DATASET_ROOT_CANDIDATES``.
+    """Return the dataset root for the dataset selected via ``DATASET``.
+
+    The ``DATASET`` constant (siehe Zeile 15) waehlt den Datensatz:
+
+    * ``0`` – Crystal-Ball-small auf dem Remote-Rechner
+    * ``1`` – Crystal-Ball (full) auf dem Remote-Rechner
+    * ``2`` – Crystal-Ball-small auf dem lokalen Rechner
 
     Raises:
-        FileNotFoundError: if none of the candidate paths exists on this machine.
+        ValueError: if ``DATASET`` is not one of the supported values (0, 1, 2).
+        FileNotFoundError: if the selected dataset root does not exist.
     """
-    for candidate in DATASET_ROOT_CANDIDATES:
-        if candidate.exists():
-            return candidate
-    tried = "\n  ".join(str(p) for p in DATASET_ROOT_CANDIDATES)
-    raise FileNotFoundError(
-        f"None of the configured dataset roots exist on this machine:\n  {tried}"
-    )
+    if DATASET == 0:
+        # Crystal-Ball-small, remote -- Pfad ggf. anpassen
+        root = Path("D:/Students/ssambale_jwiegner/Crystal-Ball-small/data") 
+    elif DATASET == 1:
+        # Crystal-Ball (full), remote
+        root = Path("D:/Students/ssambale_jwiegner/Crystal-Ball/data")
+    elif DATASET == 2:
+        # Crystal-Ball-small, local -- Pfad ggf. anpassen
+        root = Path("C:/Crystal-Ball-small/data") 
+    else:
+        raise ValueError(
+            f"Unsupported DATASET value {DATASET!r}; expected 0, 1 or 2."
+        )
+
+    if not root.exists():
+        raise FileNotFoundError(
+            f"Selected dataset root does not exist on this machine:\n  {root}"
+        )
+    return root
 
 
 DATASET_ROOT = get_dataset_root()
