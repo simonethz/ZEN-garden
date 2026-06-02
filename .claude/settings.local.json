@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git fetch *)"
+      "Bash(git fetch *)",
+      "Read(//d/Students/ssambale_jwiegner/Crystal-Ball/data/outputs/Crystal_Ball/**)"
     ]
   }
 }

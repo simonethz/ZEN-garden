@@ -6,13 +6,6 @@ import numpy as np
 import pandas as pd
 
 
-# Capacities below this threshold [GW] are treated as "not installed" when
-# normalizing flows per GW. Dividing a flow by a tiny but non-zero capacity
-# (numerical solver residual or marginally-used technology) would otherwise
-# produce absurdly large specific values that propagate into revenue/cost.
-CAPACITY_FLOOR_GW = 1e-2
-
-
 # general helper functions
 def _normalize_interval(optimization_setup):
     """interval between the optimized years for normalizing the dual variables ``.
@@ -207,11 +200,7 @@ def get_specific_production(optimization_setup) -> pd.Series:
         on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
         how="left",
     )
-    merged["spec"] = np.where(
-        merged["capacity"] > CAPACITY_FLOOR_GW,
-        merged["flow_energy"] / merged["capacity"],
-        np.nan,
-    )
+    merged["spec"] = merged["flow_energy"] / merged["capacity"]
     result = merged.set_index(
         ["set_technologies", "set_output_carriers", "set_nodes", op_level]
     )["spec"]
@@ -297,11 +286,7 @@ def get_flow_reference_carrier(optimization_setup) -> pd.Series:
         on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
         how="left",
     )
-    merged["spec"] = np.where(
-        merged["capacity"] > CAPACITY_FLOOR_GW,
-        merged["flow_energy"] / merged["capacity"],
-        np.nan,
-    )
+    merged["spec"] = merged["flow_energy"] / merged["capacity"]
     merged["reference_carrier"] = merged["set_technologies"].map(tech_ref_map)
     result = merged.set_index(
         ["set_technologies", "reference_carrier", "set_nodes", op_level]
@@ -401,11 +386,7 @@ def get_flow_input_carrier(optimization_setup) -> pd.Series:
         on=["set_technologies", "set_nodes", "set_time_steps_yearly"],
         how="left",
     )
-    merged["spec"] = np.where(
-        merged["capacity"] > CAPACITY_FLOOR_GW,
-        merged["flow_energy"] / merged["capacity"],
-        np.nan,
-    )
+    merged["spec"] = merged["flow_energy"] / merged["capacity"]
     merged["spec"] = merged["spec"].fillna(0.0)
     result = merged.set_index(
         ["set_technologies", "set_input_carriers", "set_nodes", op_level]
@@ -1129,6 +1110,31 @@ def visualization(
         cco2_t = cco2[mask]
         pro_t = pro[mask]
 
+        # technologies/nodes with zero revenue have no existing capacity for this
+        # carrier; drop them from the plots and list them as text annotation.
+        nonzero_mask = rev_t.values != 0
+        zero_pairs = [f"{t} / {n}" for (t, n), keep in zip(rev_t.index, nonzero_mask) if not keep]
+        rev_t = rev_t[nonzero_mask]
+        cap_t = cap_t[nonzero_mask]
+        fop_t = fop_t[nonzero_mask]
+        vop_t = vop_t[nonzero_mask]
+        icc_t = icc_t[nonzero_mask]
+        tco2_t = tco2_t[nonzero_mask]
+        cco2_t = cco2_t[nonzero_mask]
+        pro_t = pro_t[nonzero_mask]
+
+        no_cap_text = (
+            "No existing capacity: " + ", ".join(zero_pairs) if zero_pairs else ""
+        )
+
+        if pro_t.empty:
+            # nothing left to plot, but still surface the skipped entries
+            print(
+                f"visualization: carrier '{carrier}' – alle Technologien ohne Revenue. "
+                f"{no_cap_text}"
+            )
+            continue
+
         labels = [f"{t}\n{n}" for t, n in pro_t.index]
         x = list(range(len(labels)))
         fig_width = max(7, len(labels) * 1.6)
@@ -1162,7 +1168,12 @@ def visualization(
         ax.set_title(f"Investment Profitability Breakdown – output carrier '{carrier}' ({year})")
         ax.legend(loc="upper right", fontsize=8)
         ax.grid(axis="y", linestyle=":", alpha=0.5)
-        plt.tight_layout()
+        if no_cap_text:
+            fig.text(0.5, 0.01, no_cap_text, ha="center", va="bottom",
+                     fontsize=8, style="italic", wrap=True)
+            plt.tight_layout(rect=(0, 0.05, 1, 1))
+        else:
+            plt.tight_layout()
         p1 = out / f"profitability_breakdown_{carrier}_{year}.png"
         fig.savefig(p1, dpi=150)
         plt.close(fig)
@@ -1195,7 +1206,12 @@ def visualization(
         ]
         ax.legend(handles=handles, fontsize=8)
         ax.grid(axis="y", linestyle=":", alpha=0.5)
-        plt.tight_layout()
+        if no_cap_text:
+            fig.text(0.5, 0.01, no_cap_text, ha="center", va="bottom",
+                     fontsize=8, style="italic", wrap=True)
+            plt.tight_layout(rect=(0, 0.05, 1, 1))
+        else:
+            plt.tight_layout()
         p2 = out / f"profitability_net_{carrier}_{year}.png"
         fig.savefig(p2, dpi=150)
         plt.close(fig)

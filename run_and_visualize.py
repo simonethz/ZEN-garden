@@ -6,7 +6,7 @@ import pandas as pd
 
 from zen_garden import Results, run
 
-DATASET = 1 #0 for Crystal-Ball-small remote, 1 for Crystal-Ball full remote, 2 for Crystal-Ball-small local
+DATASET = 0 #0 for Crystal-Ball-small remote, 1 for Crystal-Ball full remote, 2 for Crystal-Ball-small local, 3 for Climate resilience remote, 4 for Crystal-Ball reduced remote
 
 
 def get_dataset_root() -> Path:
@@ -17,9 +17,11 @@ def get_dataset_root() -> Path:
     * ``0`` – Crystal-Ball-small auf dem Remote-Rechner
     * ``1`` – Crystal-Ball (full) auf dem Remote-Rechner
     * ``2`` – Crystal-Ball-small auf dem lokalen Rechner
+    * ``3`` – Climate resilience auf Remote-Rechner
+    * ``4`` – Crystal-Balll reduced auf Remote-Rechner
 
     Raises:
-        ValueError: if ``DATASET`` is not one of the supported values (0, 1, 2).
+        ValueError: if ``DATASET`` is not one of the supported values (0, 1, 2, 3, 4).
         FileNotFoundError: if the selected dataset root does not exist.
     """
     if DATASET == 0:
@@ -31,9 +33,15 @@ def get_dataset_root() -> Path:
     elif DATASET == 2:
         # Crystal-Ball-small, local -- Pfad ggf. anpassen
         root = Path("C:/Crystal-Ball-small/data") 
+    elif DATASET == 3:
+        # Climate resilience, remote
+        root = Path("D:/Students/ssambale_jwiegner/Climate-resilience/data")
+    elif DATASET == 4:
+        # Crystal-Ball reduced, remote
+        root = Path("D:/Students/ssambale_jwiegner/Crystal_Ball_reduced/data")
     else:
         raise ValueError(
-            f"Unsupported DATASET value {DATASET!r}; expected 0, 1 or 2."
+            f"Unsupported DATASET value {DATASET!r}; expected 0, 1, 2, 3 or 4."
         )
 
     if not root.exists():
