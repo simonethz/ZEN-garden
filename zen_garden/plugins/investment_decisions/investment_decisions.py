@@ -141,6 +141,8 @@ def extract_average_shadow_prices(optimization_setup):
         return None
 
     average_duals = full_ts.mean(axis=1).to_frame(name="average_shadow_price")
+    logging.info("\n--- Average shadow prices across time steps ---")
+    logging.info(average_duals)
     return average_duals
 
 # flow, production and shadow price calculations

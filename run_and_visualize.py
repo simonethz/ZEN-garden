@@ -159,6 +159,119 @@ def visualize_capacity_additions():
 
 
 
+def record_run_summary(csv_name: str = "run_summary.csv") -> None:
+    """Append a one-line snapshot of the current run to a shared CSV.
+
+    Columns (header only in row 1):
+      - run_timestamp
+      - total_cost: sum of `net_present_cost` over all optimized years
+      - cap|<tech>|<node>|<year>: capacity addition per (tech, node, year)
+      - sp|<carrier>|<node>|<year>: mean shadow price of the nodal energy
+        balance over the full-resolution time series (analogous to
+        `extract_normalized_dual` -> averaged across time)
+
+    Location: same as `visualize_capacity_additions` (DATASET_ROOT.parent /
+    "visualization"), so columns across runs of the same dataset are aligned.
+    """
+    from datetime import datetime
+    import csv
+
+    results = Results(path=str(OUTPUT_PATH))
+    row: dict[str, float | str] = {
+        "run_timestamp": datetime.now().isoformat(timespec="seconds"),
+    }
+
+    # --- total cost ---
+    npc = results.get_total("net_present_cost")
+    if isinstance(npc, pd.DataFrame):
+        npc = npc.iloc[:, 0] if npc.shape[1] else pd.Series(dtype=float)
+    total_cost = float(pd.Series(npc).sum()) if npc is not None else float("nan")
+    row["total_cost"] = total_cost
+
+    # --- capacity additions per (tech, node, year) ---
+    cap = results.get_df("capacity_addition")
+    if isinstance(cap, dict):
+        cap = next(iter(cap.values()))
+    if cap is not None and len(cap) > 0:
+        s = cap if isinstance(cap, pd.Series) else cap.iloc[:, 0]
+        names = list(s.index.names)
+
+        def _lvl(cands):
+            for c in cands:
+                if c in names:
+                    return c
+            return None
+
+        tech_lvl = _lvl(["technology", "set_technologies"])
+        node_lvl = _lvl(["location", "node", "set_location", "set_nodes"])
+        year_lvl = _lvl(["year", "set_time_steps_yearly", "time_operation"])
+        cap_lvl = _lvl(["capacity_type", "set_capacity_types"])
+        if cap_lvl is not None:
+            try:
+                s = s.xs("power", level=cap_lvl)
+            except KeyError:
+                s = s.groupby(level=[l for l in names if l != cap_lvl]).sum()
+
+        if tech_lvl and node_lvl and year_lvl:
+            for (tech, node, year), val in s.groupby(
+                level=[tech_lvl, node_lvl, year_lvl]
+            ).sum().items():
+                row[f"cap|{tech}|{node}|{year}"] = float(val)
+
+    # --- shadow prices: mean over the full-resolution time series, PER YEAR ---
+    # `get_dual` with `year=y` returns the dual columns for the base time steps
+    # of optimized year `y` only. We take the row-wise mean across those columns
+    # so each (carrier, node, year) gets one number, then emit a column
+    # `sp|<carrier>|<node>|year_<y>`.
+    try:
+        first_scenario = next(iter(results.solution_loader.scenarios.values()))
+        n_years = int(first_scenario.system.optimized_years)
+    except Exception:
+        n_years = 0
+
+    for y in range(n_years):
+        duals_y = results.get_dual("constraint_nodal_energy_balance", year=y)
+        if duals_y is None or len(duals_y) == 0:
+            continue
+        if isinstance(duals_y, pd.Series):
+            mean_sp = duals_y
+        else:
+            mean_sp = duals_y.mean(axis=1)
+
+        for key, val in mean_sp.items():
+            key_tuple = key if isinstance(key, tuple) else (key,)
+            parts = "|".join(str(k) for k in key_tuple)
+            row[f"sp|{parts}|year_{y}"] = float(val)
+
+    # --- append to CSV (union of columns across runs) ---
+    out_dir = DATASET_ROOT.parent / "visualization"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / csv_name
+
+    if out_path.exists():
+        existing = pd.read_csv(out_path)
+        all_cols = list(existing.columns)
+        for c in row.keys():
+            if c not in all_cols:
+                all_cols.append(c)
+        new_row_df = pd.DataFrame([row]).reindex(columns=all_cols)
+        if list(existing.columns) != all_cols:
+            existing = existing.reindex(columns=all_cols)
+            combined = pd.concat([existing, new_row_df], ignore_index=True)
+            combined.to_csv(out_path, index=False, quoting=csv.QUOTE_MINIMAL)
+        else:
+            new_row_df.to_csv(
+                out_path, mode="a", header=False, index=False,
+                quoting=csv.QUOTE_MINIMAL,
+            )
+    else:
+        pd.DataFrame([row]).to_csv(
+            out_path, index=False, quoting=csv.QUOTE_MINIMAL,
+        )
+    print(f"Appended run summary to {out_path}")
+
+
 if __name__ == "__main__":
     run_dataset()
     visualize_capacity_additions()
+    record_run_summary()

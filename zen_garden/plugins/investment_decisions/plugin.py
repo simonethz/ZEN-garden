@@ -50,16 +50,12 @@ def log_block(filename):
 def after_optimization_event(optimization_setup):
     with log_block(r"D:\Students\ssambale_jwiegner\ZEN-garden\investment_plugin_output.txt"):
     
-        #call opex
         print("\n--- Calculating and printing discounted fixed OPEX ---")
-        #get_fixed_opex_discounted(optimization_setup)
-        #get_flow_reference_carrier(optimization_setup)
-        #get_variable_opex_discounted(optimization_setup)
-        #calculate_input_carrier_cost(optimization_setup)
-        #calculate_profitability(optimization_setup)
-        visualization(optimization_setup)
+       
+        extract_average_shadow_prices(optimization_setup)        
 
         # publish profitability for use as bias in the next period's objective
         # (consumed by EnergySystemRules.objective_total_cost_profitability_bias).
         optimization_setup.profitability_bias_weight = config.get("bias_weight", 1.0)
         optimization_setup.profitability = calculate_profitability(optimization_setup)
+    visualization(optimization_setup)
