@@ -1025,6 +1025,7 @@ def calculate_profitability(optimization_setup) -> pd.Series:
     return profitability
 
 
+
 #visualization
 def visualization(
     optimization_setup,

@@ -56,56 +56,109 @@ CONFIG_PATH = DATASET_ROOT / "config.json"
 DATASET_PATH = DATASET_ROOT / "Crystal_Ball"
 OUTPUT_PATH = DATASET_ROOT / "outputs" / "Crystal_Ball"
 DUAL_NAME = "constraint_nodal_energy_balance"
-HOURS_PER_YEAR = 8760
 
 
-def run_and_print_yearly_average_duals():
-    """Run ZEN-garden and print yearly averages of the nodal balance duals.
 
-    Solves the model, loads the saved results, pulls the full disaggregated dual
-    time series with ``Results.get_full_ts``, and reports — for every carrier
-    and node — the mean shadow price of each year (each successive 8760-hour
-    window of the time series).
-    """
+def run_dataset():
+    """Run ZEN-garden."""
     run(config=str(CONFIG_PATH), dataset=str(DATASET_PATH))
 
+
+def visualize_capacity_additions():
+    """Stacked bar chart of capacity additions per (node, year), stacked by tech.
+
+    One bar per (node, year); years for the same node sit next to each other.
+    Saved to ``<dataset_root_parent>/visualization/capacity_additions.png``.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     results = Results(path=str(OUTPUT_PATH))
-    full_ts = results.get_full_ts(DUAL_NAME)
-    if full_ts is None or len(full_ts) == 0:
-        print(f"No full time series available for '{DUAL_NAME}'.")
-        return None
+    df = results.get_df("capacity_addition")
+    if df is None or len(df) == 0:
+        print("No capacity_addition data available.")
+        return
 
-    n_cols = full_ts.shape[1]
-    n_years = n_cols // HOURS_PER_YEAR
-    if n_years == 0:
-        print(
-            f"Time series only has {n_cols} columns, less than one year "
-            f"({HOURS_PER_YEAR} h). Reporting overall mean instead."
-        )
-        return full_ts.mean(axis=1).rename("average_shadow_price")
+    if isinstance(df, dict):
+        df = next(iter(df.values()))
+    s = df if isinstance(df, pd.Series) else df.iloc[:, 0]
 
-    yearly_means = {
-        year: full_ts.iloc[:, year * HOURS_PER_YEAR : (year + 1) * HOURS_PER_YEAR].mean(
-            axis=1
-        )
-        for year in range(n_years)
-    }
-    yearly_average = pd.concat(yearly_means, axis=1)
-    yearly_average.columns.name = "year"
+    def _find_level(names, candidates):
+        for c in candidates:
+            if c in names:
+                return c
+        raise KeyError(f"None of {candidates} in index levels {list(names)}")
 
-    print(
-        f"\nYearly average nodal energy balance duals "
-        f"(per carrier and node, {n_years} year(s) of {HOURS_PER_YEAR} h):\n"
-        f"{yearly_average}"
+    names = s.index.names
+    tech_lvl = _find_level(names, ["technology", "set_technologies"])
+    node_lvl = _find_level(
+        names, ["location", "node", "set_location", "set_nodes"]
     )
+    year_lvl = _find_level(
+        names, ["year", "set_time_steps_yearly", "time_operation"]
+    )
+    cap_lvl_candidates = ["capacity_type", "set_capacity_types"]
+    cap_lvl = next((c for c in cap_lvl_candidates if c in names), None)
+    if cap_lvl is not None:
+        s = s.xs("power", level=cap_lvl)
 
-    flow = results.get_df("flow_conversion_output")
-    print(f"\nFlow conversion output (get df series):\n{flow}")
-    
+    pivot = s.unstack(tech_lvl).fillna(0.0)
+    pivot = pivot.reorder_levels([node_lvl, year_lvl]).sort_index()
 
+    # drop techs that never get added
+    pivot = pivot.loc[:, (pivot != 0).any(axis=0)]
+    if pivot.empty:
+        print("No non-zero capacity additions to plot.")
+        return
 
+    labels = [f"{node}\n{year}" for node, year in pivot.index]
+    x = list(range(len(labels)))
+    fig_width = max(8, 0.6 * len(labels))
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
+
+    bottom = pd.Series(0.0, index=pivot.index)
+    cmap = plt.colormaps["tab20"]
+    totals = pivot.sum(axis=1).values
+    label_threshold = max(totals.max() * 0.03, 1e-9) if len(totals) else 0.0
+    for i, tech in enumerate(pivot.columns):
+        vals = pivot[tech].values
+        ax.bar(x, vals, bottom=bottom.values, label=str(tech),
+               color=cmap(i % cmap.N), edgecolor="white", linewidth=0.3)
+        for xi, v, b in zip(x, vals, bottom.values):
+            if v > label_threshold:
+                ax.text(xi, b + v / 2, f"{v:.2f}", ha="center", va="center",
+                        fontsize=7, color="black")
+        bottom = bottom + pivot[tech]
+
+    for xi, total in zip(x, totals):
+        if total > 0:
+            ax.text(xi, total, f"{total:.2f}", ha="center", va="bottom",
+                    fontsize=8, fontweight="bold")
+
+    # visual separators between nodes
+    nodes_in_order = [n for n, _ in pivot.index]
+    for i in range(1, len(nodes_in_order)):
+        if nodes_in_order[i] != nodes_in_order[i - 1]:
+            ax.axvline(i - 0.5, color="black", linewidth=0.5, linestyle=":")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+    ax.set_ylabel("Capacity addition [GW]")
+    ax.set_title("Capacity additions per node and year")
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
+    ax.grid(axis="y", linestyle=":", alpha=0.5)
+
+    out_dir = DATASET_ROOT.parent / "visualization"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "capacity_additions.png"
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved capacity-addition plot to {out_path}")
 
 
 
 if __name__ == "__main__":
-    run_and_print_yearly_average_duals()
+    run_dataset()
+    visualize_capacity_additions()

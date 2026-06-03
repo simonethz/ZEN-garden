@@ -214,7 +214,11 @@ class Analysis(Subscriptable):
     """
 
     dataset: str = ""
-    objective: Literal["total_cost", "total_carbon_emissions"] = "total_cost"
+    objective: Literal[
+        "total_cost",
+        "total_carbon_emissions",
+        "total_cost_profitability_bias",
+    ] = "total_cost"
     sense: str = "min"
     subsets: Subsets = Subsets()
     header_data_inputs: HeaderDataInputs = HeaderDataInputs()

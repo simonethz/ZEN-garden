@@ -58,3 +58,8 @@ def after_optimization_event(optimization_setup):
         #calculate_input_carrier_cost(optimization_setup)
         #calculate_profitability(optimization_setup)
         visualization(optimization_setup)
+
+        # publish profitability for use as bias in the next period's objective
+        # (consumed by EnergySystemRules.objective_total_cost_profitability_bias).
+        optimization_setup.profitability_bias_weight = config.get("bias_weight", 1.0)
+        optimization_setup.profitability = calculate_profitability(optimization_setup)
