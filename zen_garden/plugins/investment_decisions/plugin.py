@@ -12,7 +12,7 @@ import contextlib
 
 from zen_garden.plugin_system.events import Event, EventPublisher
 from zen_garden.plugins.investment_decisions.investment_decisions import (
-    calculate_input_carrier_cost, calculate_profitability, extract_average_shadow_prices, calculate_revenue, get_capex, get_fixed_opex_discounted, get_flow_reference_carrier, get_variable_opex_discounted, visualization
+    apply_profitability_bias_objective, calculate_input_carrier_cost, calculate_profitability, extract_average_shadow_prices, calculate_revenue, get_capex, get_fixed_opex_discounted, get_flow_reference_carrier, get_variable_opex_discounted, visualization
 )
 
 config = {}
@@ -46,6 +46,21 @@ def log_block(filename):
         logger.log_file.close()      # Datei sicher schließen
 
 
+@EventPublisher.register(Event.event_before_solve)
+def before_solve_event(optimization_setup):
+    """Bias the freshly constructed objective with the previous step's profitability.
+
+    Only active when ``profitability_bias_enabled`` is set in the plugin config
+    (analogous to ``bias_weight``). On the first rolling-horizon step (no
+    profitability available yet) the objective is left untouched.
+    """
+    if not config.get("profitability_bias_enabled", False):
+        return
+    apply_profitability_bias_objective(
+        optimization_setup, weight=config.get("bias_weight", 1.0)
+    )
+
+
 @EventPublisher.register(Event.event_after_optimization)
 def after_optimization_event(optimization_setup):
     with log_block(r"D:\Students\ssambale_jwiegner\ZEN-garden\investment_plugin_output.txt"):
@@ -55,7 +70,6 @@ def after_optimization_event(optimization_setup):
         extract_average_shadow_prices(optimization_setup)        
 
         # publish profitability for use as bias in the next period's objective
-        # (consumed by EnergySystemRules.objective_total_cost_profitability_bias).
-        optimization_setup.profitability_bias_weight = config.get("bias_weight", 1.0)
+        # (consumed by before_solve_event -> apply_profitability_bias_objective).
         optimization_setup.profitability = calculate_profitability(optimization_setup)
     visualization(optimization_setup)

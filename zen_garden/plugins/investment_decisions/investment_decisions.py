@@ -952,6 +952,59 @@ def get_carrier_co2_cost_discounted(optimization_setup) -> pd.Series:
     return result
 
 
+# objective modification
+def apply_profitability_bias_objective(optimization_setup, weight: float = 1.0) -> None:
+    """Replace the model objective with total NPC penalized by a profitability bias.
+
+    Modifies the already-constructed objective in place using the
+    ``remove_objective`` / ``add_objective`` pattern:
+
+    .. math::
+        J = \\sum_{y\\in\\mathcal{Y}} NPC_y
+            - w \\sum_{t,n} \\pi^{\\text{last}}_{t,n} \\cdot
+              \\text{capacity\\_addition}_{t,\\text{power},n,y_{now}}
+
+    ``\\pi^{\\text{last}}_{t,n}`` is read from ``optimization_setup.profitability``
+    (set by ``after_optimization_event`` after each solve). When the attribute is
+    absent (e.g. the first rolling-horizon step), the objective is left unchanged
+    and collapses to the plain total net present cost.
+
+    Args:
+        optimization_setup: The optimization setup holding the constructed model.
+        weight: Bias weight ``w`` applied to the profitability term.
+    """
+    profit = getattr(optimization_setup, "profitability", None)
+    if profit is None:
+        # no profitability signal yet -> keep the base total-cost objective
+        return
+
+    model = optimization_setup.model
+    base = model.variables["net_present_cost"].sum("set_time_steps_yearly")
+    year_now = optimization_setup.energy_system.set_time_steps_yearly[0]
+    cap_add = model.variables["capacity_addition"].sel(
+        set_capacity_types="power", set_time_steps_yearly=year_now,
+    )
+    coef = (
+        profit
+        .rename_axis(index={
+            "set_conversion_technologies": "set_technologies",
+            "set_nodes": "set_location",
+        })
+        .to_xarray()
+        .reindex(
+            set_technologies=cap_add.coords["set_technologies"],
+            set_location=cap_add.coords["set_location"],
+            fill_value=0.0,
+        )
+    )
+    objective = base - (weight * coef * cap_add).sum()
+
+    optimization_setup.model.remove_objective()
+    optimization_setup.model.add_objective(
+        objective, sense=optimization_setup.analysis.sense
+    )
+
+
 # profitability calculation
 def calculate_profitability(optimization_setup) -> pd.Series:
     """Calculate profitability of the capacity addition as revenue minus costs.

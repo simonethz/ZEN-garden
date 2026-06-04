@@ -567,13 +567,6 @@ class EnergySystem:
             objective = self.rules.objective_total_carbon_emissions(
                 self.optimization_setup.model
             )
-        elif (
-            self.optimization_setup.analysis.objective
-            == "total_cost_profitability_bias"
-        ):
-            objective = self.rules.objective_total_cost_profitability_bias(
-                self.optimization_setup.model
-            )
         else:
             raise KeyError(
                 f"Objective type {self.optimization_setup.analysis.objective} not known"
@@ -892,49 +885,6 @@ class EnergySystemRules(GenericRule):
         :return: net present cost objective function
         """
         return model.variables["net_present_cost"].sum("set_time_steps_yearly")
-
-    def objective_total_cost_profitability_bias(self, model):
-        """Objective function: total NPC penalized by a profitability bias on
-        capacity additions of conversion technologies.
-
-        .. math::
-            J = \\sum_{y\\in\\mathcal{Y}} NPC_y
-                - w \\sum_{t,n} \\pi^{\\text{last}}_{t,n} \\cdot
-                  \\text{capacity\\_addition}_{t,\\text{power},n,y_{now}}
-
-        ``\\pi^{\\text{last}}_{t,n}`` is read from
-        ``optimization_setup.profitability`` (set by the investment_decisions
-        plugin after each solve). When the attribute is absent (plugin not
-        installed), this collapses to ``objective_total_cost``.
-
-        :param model: optimization model
-        :return: NPC - bias * profitability * capacity_addition expression
-        """
-        base = model.variables["net_present_cost"].sum("set_time_steps_yearly")
-        profit = getattr(self.optimization_setup, "profitability", None)
-        if profit is None:
-            return base
-        weight = getattr(
-            self.optimization_setup, "profitability_bias_weight", 1.0
-        )
-        year_now = self.energy_system.set_time_steps_yearly[0]
-        cap_add = model.variables["capacity_addition"].sel(
-            set_capacity_types="power", set_time_steps_yearly=year_now,
-        )
-        coef = (
-            profit
-            .rename_axis(index={
-                "set_conversion_technologies": "set_technologies",
-                "set_nodes": "set_location",
-            })
-            .to_xarray()
-            .reindex(
-                set_technologies=cap_add.coords["set_technologies"],
-                set_location=cap_add.coords["set_location"],
-                fill_value=0.0,
-            )
-        )
-        return base - (weight * coef * cap_add).sum()
 
     def objective_total_carbon_emissions(self, model):
         """Objective function to minimize total emissions.

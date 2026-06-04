@@ -139,6 +139,9 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
             optimization_setup.overwrite_time_indices(step)
             # create optimization problem
             optimization_setup.construct_optimization_problem()
+            # allow plugins to modify the objective (e.g. profitability bias)
+            # after construction but before scaling/solving
+            EventPublisher.trigger(Event.event_before_solve, optimization_setup)
             if optimization_setup.solver.use_scaling:
                 optimization_setup.scaling.run_scaling()
             elif (
