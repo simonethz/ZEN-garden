@@ -163,8 +163,6 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
             EventPublisher.trigger(Event.event_after_optimization, optimization_setup)
 
 
-
-
             # save new capacity additions and cumulative carbon emissions
             # for next time step
             if optimization_setup.system.use_rolling_horizon:
