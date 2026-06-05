@@ -549,6 +549,7 @@ def get_capex(optimization_setup) -> pd.Series:
    
     return result
 
+
 def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
     """Total fixed OPEX [MEUR] for the capacity additions  returned by
     ``_capacity_addition`` discounted to the decision year, for conversion technologies only.
@@ -951,60 +952,6 @@ def get_carrier_co2_cost_discounted(optimization_setup) -> pd.Series:
 
     return result
 
-
-# objective modification
-def apply_profitability_bias_objective(optimization_setup, weight: float = 1.0) -> None:
-    """Replace the model objective with total NPC penalized by a profitability bias.
-
-    Modifies the already-constructed objective in place using the
-    ``remove_objective`` / ``add_objective`` pattern:
-
-    .. math::
-        J = \\sum_{y\\in\\mathcal{Y}} NPC_y
-            - w \\sum_{t,n} \\pi^{\\text{last}}_{t,n} \\cdot
-              \\text{capacity\\_addition}_{t,\\text{power},n,y_{now}}
-
-    ``\\pi^{\\text{last}}_{t,n}`` is read from ``optimization_setup.profitability``
-    (set by ``after_optimization_event`` after each solve). When the attribute is
-    absent (e.g. the first rolling-horizon step), the objective is left unchanged
-    and collapses to the plain total net present cost.
-
-    Args:
-        optimization_setup: The optimization setup holding the constructed model.
-        weight: Bias weight ``w`` applied to the profitability term.
-    """
-    profit = getattr(optimization_setup, "profitability", None)
-    if profit is None:
-        # no profitability signal yet -> keep the base total-cost objective
-        return
-
-    model = optimization_setup.model
-    base = model.variables["net_present_cost"].sum("set_time_steps_yearly")
-    year_now = optimization_setup.energy_system.set_time_steps_yearly[0]
-    cap_add = model.variables["capacity_addition"].sel(
-        set_capacity_types="power", set_time_steps_yearly=year_now,
-    )
-    coef = (
-        profit
-        .rename_axis(index={
-            "set_conversion_technologies": "set_technologies",
-            "set_nodes": "set_location",
-        })
-        .to_xarray()
-        .reindex(
-            set_technologies=cap_add.coords["set_technologies"],
-            set_location=cap_add.coords["set_location"],
-            fill_value=0.0,
-        )
-    )
-    objective = base - (weight * coef * cap_add).sum()
-
-    optimization_setup.model.remove_objective()
-    optimization_setup.model.add_objective(
-        objective, sense=optimization_setup.analysis.sense
-    )
-
-
 # profitability calculation
 def calculate_profitability(optimization_setup) -> pd.Series:
     """Calculate profitability of the capacity addition as revenue minus costs.
@@ -1078,6 +1025,251 @@ def calculate_profitability(optimization_setup) -> pd.Series:
         )
     print()
     return profitability
+
+
+# bias normalization
+def get_npc_capex_coefficient(optimization_setup) -> pd.Series:
+    """Per-GW coefficient that maps a capacity addition onto its CAPEX share of
+    the base objective ``base = Σ_y NPC_y``, for **linear** conversion
+    technologies only.
+
+    Reconstructs the exact model chain that turns a capacity addition
+    :math:`\\Delta S_{h,p,y'}` (built in the decision year ``y'``) into its
+    contribution to the total net present cost, so that::
+
+        capex_share_of_base[h, p] = coefficient[h, p] * capacity_addition[h, p]
+
+    The decision year ``y'`` is the **first** year of the current foresight
+    horizon (``set_time_steps_yearly[0]``), matching the variable that
+    ``apply_profitability_bias_objective`` multiplies with the profitability
+    bias. The coefficient is the partial derivative
+    :math:`\\partial\\,\\text{base} / \\partial\\,\\Delta S_{h,p,y'}` and equals
+
+    .. math::
+        c_{h,p} = a_h \\; \\alpha_{h,p,y'}
+                  \\sum_{y \\in \\mathcal{Y}\\,:\\,y' \\in \\mathcal{D}_h(y)}
+                  \\phi_y
+
+    with the three model ingredients:
+
+    - **Annuity factor** :math:`a_h` (``constraint_cost_capex_yearly``)::
+
+          a_h = ((1+r)^{lt} r) / ((1+r)^{lt} - 1)   (or 1/lt if r == 0)
+
+      using the scalar discount rate ``r`` and the technology's
+      ``depreciation_time`` ``lt``.
+    - **Specific overnight CAPEX** :math:`\\alpha_{h,p,y'}` =
+      ``capex_specific_conversion`` of the decision year
+      (``constraint_linear_capex``; PWA technologies have no constant per-GW
+      value and are returned as ``NaN``).
+    - **Economic discount factor** :math:`\\phi_y`
+      (``constraint_net_present_cost``), summed over every horizon year ``y``
+      in whose depreciation range :math:`\\mathcal{D}_h(y)` the decision year
+      ``y'`` still falls (``Technology.get_lifetime_range`` with
+      ``use_depreciation_time=True``).
+
+    Returns:
+        ``pd.Series`` indexed by ``(set_conversion_technologies, set_nodes)``
+        with the CAPEX coefficient in model money units per GW. PWA
+        technologies are filled with ``NaN``.
+    """
+    from zen_garden.model.technology.technology import Technology
+    from zen_garden.model.technology.conversion_technology import ConversionTechnology
+
+    sets = optimization_setup.sets
+    parameters = optimization_setup.parameters
+    energy_system = optimization_setup.energy_system
+    system = optimization_setup.system
+
+    techs = list(sets["set_conversion_technologies"])
+    nodes = list(sets["set_nodes"])
+    years = list(sets["set_time_steps_yearly"])
+    year_build = years[0]  # decision year: matches apply_profitability_bias_objective
+
+    # scalar discount rate, exactly as used in the model constraints
+    dr = float(np.asarray(parameters.discount_rate).item())
+    depreciation_time = parameters.depreciation_time.to_series()
+
+    # --- economic discount factor phi_y (mirror constraint_net_present_cost) ---
+    entire_horizon = energy_system.set_time_steps_yearly_entire_horizon
+    interval = system.interval_between_years
+    discount_factor: dict[int, float] = {}
+    for year in years:
+        interval_between = 1 if year == entire_horizon[-1] else interval
+        discount_factor[year] = sum(
+            (1 / (1 + dr)) ** (interval * (year - year_build) + i)
+            for i in range(0, interval_between)
+        )
+
+    # --- specific overnight CAPEX alpha of the decision year (linear only) ---
+    capex_specific = parameters.capex_specific_conversion.to_series().dropna()
+    for level_name in ("set_time_steps_yearly", "year"):
+        if level_name in capex_specific.index.names:
+            capex_specific = capex_specific.xs(year_build, level=level_name)
+            break
+
+    idx = pd.MultiIndex.from_product(
+        [techs, nodes], names=["set_conversion_technologies", "set_nodes"]
+    )
+    result = pd.Series(np.nan, index=idx, name="npc_capex_coefficient")
+
+    for tech in techs:
+        # PWA technologies have no constant per-GW coefficient -> leave as NaN
+        if optimization_setup.get_attribute_of_specific_element(
+            ConversionTechnology, tech, "capex_is_pwa"
+        ):
+            continue
+
+        lt = float(depreciation_time[tech])
+        if dr != 0:
+            annuity = ((1 + dr) ** lt * dr) / ((1 + dr) ** lt - 1)
+        else:
+            annuity = 1.0 / lt
+
+        # discount factors of every horizon year whose depreciation range still
+        # contains the decision year (i.e. the build still incurs annual capex)
+        disc_sum = 0.0
+        for year in years:
+            deprange = Technology.get_lifetime_range(
+                optimization_setup, tech, year, use_depreciation_time=True
+            )
+            if year_build in deprange:
+                disc_sum += discount_factor[year]
+
+        for node in nodes:
+            if (tech, node) not in capex_specific.index:
+                continue
+            alpha = float(capex_specific.loc[(tech, node)])
+            result.loc[(tech, node)] = annuity * alpha * disc_sum
+
+    return result
+
+def get_min_coefficient_profitability_ratio(optimization_setup) -> float:
+    """Minimal ratio of NPC CAPEX coefficient to profitability over all
+    (conversion technology, node) pairs.
+
+    Per ``(set_conversion_technologies, set_nodes)`` computes::
+
+        ratio = get_npc_capex_coefficient / optimization_setup.profitability
+
+    aligning both series on their shared index, and returns the smallest finite
+    ratio over the **profitable** pairs only (profitability > 0). Pairs whose
+    coefficient is ``NaN`` (PWA technologies) or whose profitability is not
+    strictly positive are excluded.
+
+    The profitability is read from ``optimization_setup.profitability`` (set by
+    ``after_optimization_event`` after each solve). When the attribute is absent
+    (e.g. the first rolling-horizon step), ``NaN`` is returned.
+
+    Returns:
+        ``float`` minimal ratio, or ``NaN`` if no profitable pair remains.
+    """
+    profitability = getattr(optimization_setup, "profitability", None)
+    if profitability is None:
+        # no profitability signal yet -> no ratio available
+        print("\n--- Coefficient / profitability ratio: no profitability signal yet ---\n")
+        return float("nan")
+
+    coefficient = get_npc_capex_coefficient(optimization_setup)
+
+    # restrict to profitable pairs only
+    profitability = profitability[profitability > 0]
+
+    ratio = coefficient.div(profitability)
+    ratio = ratio.replace([np.inf, -np.inf], np.nan).dropna()
+    ratio.name = "coefficient_profitability_ratio"
+
+    if ratio.empty:
+        print("\n--- Coefficient / profitability ratio: no profitable (tech, node) pairs ---\n")
+        return float("nan")
+
+    min_idx = ratio.idxmin()
+    min_val = float(ratio.loc[min_idx])
+
+    print(
+        f"\n--- CAPEX-coefficient / profitability ratios (profitable pairs) ---\n"
+        f"{'Tech / Node':<45} {'Ratio':>12}\n"
+        + "-" * 58
+    )
+    for idx, val in ratio.sort_values().items():
+        marker = "  <- min" if idx == min_idx else ""
+        print(f"{str(idx):<45} {val:>12.4f}{marker}")
+    print()
+
+    return min_val
+
+
+
+
+# objective modification
+def apply_profitability_bias_objective(optimization_setup, weight: float = 1.0) -> None:
+    """Replace the model objective with total NPC penalized by a profitability bias.
+
+    Modifies the already-constructed objective in place using the
+    ``remove_objective`` / ``add_objective`` pattern:
+
+    .. math::
+        J = \\sum_{y\\in\\mathcal{Y}} NPC_y
+            - \\rho_{\\min}\\, w \\sum_{t,n} \\pi^{\\text{last}}_{t,n} \\cdot
+              \\text{capacity\\_addition}_{t,\\text{power},n,y_{now}}
+
+    ``\\pi^{\\text{last}}_{t,n}`` is read from ``optimization_setup.profitability``
+    (set by ``after_optimization_event`` after each solve). When the attribute is
+    absent (e.g. the first rolling-horizon step), the objective is left unchanged
+    and collapses to the plain total net present cost.
+
+    ``\\rho_{\\min}`` is the minimal CAPEX-coefficient / profitability ratio over
+    the profitable (tech, node) pairs, from
+    ``get_min_coefficient_profitability_ratio``. If it is not finite (no
+    profitable pair), the bias term is dropped and the objective collapses to the
+    plain total net present cost.
+
+    Args:
+        optimization_setup: The optimization setup holding the constructed model.
+        weight: Bias weight ``w`` applied to the profitability term.
+    """
+    profit = getattr(optimization_setup, "profitability", None)
+    if profit is None:
+        # no profitability signal yet -> keep the base total-cost objective
+        return
+
+    ratio_min = get_min_coefficient_profitability_ratio(optimization_setup)
+    if not np.isfinite(ratio_min):
+        # no profitable (tech, node) pair -> keep the base total-cost objective
+        logging.warning(
+            "apply_profitability_bias_objective: minimal coefficient/profitability "
+            "ratio is not finite; keeping plain net present cost objective."
+        )
+        return
+
+    model = optimization_setup.model
+    base = model.variables["net_present_cost"].sum("set_time_steps_yearly")
+    year_now = optimization_setup.energy_system.set_time_steps_yearly[0]
+    cap_add = model.variables["capacity_addition"].sel(
+        set_capacity_types="power", set_time_steps_yearly=year_now,
+    )
+    coef = (
+        profit
+        .rename_axis(index={
+            "set_conversion_technologies": "set_technologies",
+            "set_nodes": "set_location",
+        })
+        .to_xarray()
+        .reindex(
+            set_technologies=cap_add.coords["set_technologies"],
+            set_location=cap_add.coords["set_location"],
+            fill_value=0.0,
+        )
+    )
+    objective = base - ratio_min * (weight * coef * cap_add).sum()
+
+    optimization_setup.model.remove_objective()
+    optimization_setup.model.add_objective(
+        objective, sense=optimization_setup.analysis.sense
+    )
+
+
+
 
 
 
