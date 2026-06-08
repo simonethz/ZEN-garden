@@ -181,6 +181,22 @@ def record_run_summary(csv_name: str = "run_summary.csv") -> None:
         "run_timestamp": datetime.now().isoformat(timespec="seconds"),
     }
 
+    # --- optimization mode + bias value (from the investment_decisions plugin
+    # config, populated in-process by register_plugins during the run) ---
+    try:
+        from zen_garden.plugins.investment_decisions.plugin import (
+            config as plugin_config,
+        )
+    except Exception:
+        plugin_config = {}
+    bias_enabled = bool(plugin_config.get("profitability_bias_enabled", False))
+    bias_weight = plugin_config.get("bias_weight", 0.5)
+    row["optimization"] = (
+        f"profitability_bias (bias_weight={bias_weight})"
+        if bias_enabled
+        else "total_cost"
+    )
+
     # --- total cost ---
     npc = results.get_total("net_present_cost")
     if isinstance(npc, pd.DataFrame):
@@ -230,7 +246,11 @@ def record_run_summary(csv_name: str = "run_summary.csv") -> None:
         n_years = 0
 
     for y in range(n_years):
-        duals_y = results.get_dual("constraint_nodal_energy_balance", year=y)
+        try:
+            duals_y = results.get_dual("constraint_nodal_energy_balance", year=y)
+        except Exception as exc:
+            print(f"  Warning: could not extract shadow prices for year {y}: {exc}")
+            continue
         if duals_y is None or len(duals_y) == 0:
             continue
         if isinstance(duals_y, pd.Series):
@@ -254,6 +274,9 @@ def record_run_summary(csv_name: str = "run_summary.csv") -> None:
         for c in row.keys():
             if c not in all_cols:
                 all_cols.append(c)
+        # keep the optimization column at the second position across schema changes
+        if "optimization" in all_cols:
+            all_cols.insert(1, all_cols.pop(all_cols.index("optimization")))
         new_row_df = pd.DataFrame([row]).reindex(columns=all_cols)
         if list(existing.columns) != all_cols:
             existing = existing.reindex(columns=all_cols)
@@ -271,7 +294,110 @@ def record_run_summary(csv_name: str = "run_summary.csv") -> None:
     print(f"Appended run summary to {out_path}")
 
 
+
+
+def _latest_profitability_csv() -> Path | None:
+    """Return the most recent ``profitability_components.csv`` of this dataset.
+
+    The investment_decisions plugin writes one CSV per program run into a
+    timestamped subfolder of ``<dataset_root>/visualization``. This picks the
+    newest such file (by modification time), or ``None`` if none exists.
+    """
+    viz = DATASET_ROOT.parent / "visualization"
+    candidates = list(viz.glob("*/profitability_components.csv"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def visualize_profitability_over_years(csv_path: str | Path | None = None) -> None:
+    """For each output carrier, plot the profitability development over decision years.
+
+    Reads ``profitability_components.csv`` (written per optimization step by the
+    investment_decisions plugin) and draws, per output carrier, one line per
+    (technology, node) pair showing the net discounted profitability across the
+    successive ``decision_year`` values of a rolling-horizon run.
+
+    A technology with several output carriers appears in several carrier charts
+    (its ``output_carrier`` cell holds the carriers joined with ``", "`` and is
+    split here). Charts are saved next to the CSV as
+    ``profitability_over_years_<carrier>.png``.
+
+    Args:
+        csv_path: path to the CSV. Defaults to the newest
+            ``profitability_components.csv`` under
+            ``<dataset_root>/visualization``.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if csv_path is None:
+        csv_path = _latest_profitability_csv()
+    if csv_path is None:
+        print("No profitability_components.csv found; skipping plots.")
+        return
+    csv_path = Path(csv_path)
+
+    df = pd.read_csv(csv_path)
+    if df.empty:
+        print(f"{csv_path} is empty; skipping plots.")
+        return
+
+    # one technology may produce several output carriers -> split and explode so
+    # each row is attributed to every carrier it contributes to.
+    df["output_carrier"] = df["output_carrier"].fillna("").astype(str)
+    df = df.assign(output_carrier=df["output_carrier"].str.split(", ")).explode(
+        "output_carrier"
+    )
+    df = df[df["output_carrier"].str.strip() != ""]
+    if df.empty:
+        print(f"{csv_path} has no output carriers; skipping plots.")
+        return
+
+    out_dir = csv_path.parent
+    cmap = plt.colormaps["tab10"]
+
+    for carrier, carrier_df in df.groupby("output_carrier"):
+        fig, ax = plt.subplots(figsize=(9, 5))
+
+        plotted = 0
+        for i, ((tech, node), pair_df) in enumerate(
+            carrier_df.groupby(["set_conversion_technologies", "set_nodes"])
+        ):
+            pair_df = pair_df.sort_values("decision_year")
+            ax.plot(
+                pair_df["decision_year"],
+                pair_df["profitability"],
+                marker="o",
+                color=cmap(i % cmap.N),
+                label=f"{tech} / {node}",
+            )
+            plotted += 1
+
+        if plotted == 0:
+            plt.close(fig)
+            continue
+
+        ax.axhline(0, color="black", linewidth=0.8, linestyle="--", zorder=1)
+        ax.set_xlabel("Decision year")
+        ax.set_ylabel("Net discounted profitability [model money units]")
+        ax.set_title(f"Profitability development – output carrier '{carrier}'")
+        ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
+        ax.grid(axis="both", linestyle=":", alpha=0.5)
+        # integer ticks on the decision-year axis
+        years = sorted(carrier_df["decision_year"].unique())
+        ax.set_xticks(years)
+
+        out_path = out_dir / f"profitability_over_years_{carrier}.png"
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved profitability-over-years plot to {out_path}")
+
+
 if __name__ == "__main__":
     run_dataset()
     visualize_capacity_additions()
     record_run_summary()
+    visualize_profitability_over_years()

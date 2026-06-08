@@ -12,7 +12,7 @@ import contextlib
 
 from zen_garden.plugin_system.events import Event, EventPublisher
 from zen_garden.plugins.investment_decisions.investment_decisions import (
-    apply_profitability_bias_objective, calculate_input_carrier_cost, calculate_profitability, extract_average_shadow_prices, calculate_revenue, get_capex, get_fixed_opex_discounted, get_flow_reference_carrier, get_min_coefficient_profitability_ratio, get_variable_opex_discounted, visualization
+    apply_profitability_bias_objective, calculate_input_carrier_cost, calculate_profitability, extract_average_shadow_prices, calculate_revenue, get_capex, get_fixed_opex_discounted, get_flow_reference_carrier, get_min_coefficient_profitability_ratio, get_variable_opex_discounted, save_profitability_components, visualization
 )
 
 config = {}
@@ -57,7 +57,7 @@ def before_solve_event(optimization_setup):
     if not config.get("profitability_bias_enabled", False):
         return
     apply_profitability_bias_objective(
-        optimization_setup, weight=config.get("bias_weight", 1.0)
+        optimization_setup, weight=config.get("bias_weight", 0.5)
     )
 
 
@@ -72,4 +72,8 @@ def after_optimization_event(optimization_setup):
         # publish profitability for use as bias in the next period's objective
         # (consumed by before_solve_event -> apply_profitability_bias_objective).
         optimization_setup.profitability = calculate_profitability(optimization_setup)
+
+        # persist all profitability components of this step to a per-run CSV so
+        # they can be reused later (e.g. by run_and_visualize) across all steps.
+        save_profitability_components(optimization_setup)
     visualization(optimization_setup)

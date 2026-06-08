@@ -6,6 +6,49 @@ import numpy as np
 import pandas as pd
 
 
+# timestamp of the current program run, shared across all optimization steps so
+# that every ``visualization`` call of one run writes into the same folder.
+_RUN_TIMESTAMP: str | None = None
+
+def _get_run_timestamp() -> str:
+    """Return a single timestamp string for the whole program run.
+
+    Computed once on first use and cached at module level, so repeated
+    ``visualization`` calls (one per rolling-horizon / optimization step) all
+    share the same folder name.
+    """
+    global _RUN_TIMESTAMP
+    if _RUN_TIMESTAMP is None:
+        from datetime import datetime
+
+        _RUN_TIMESTAMP = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return _RUN_TIMESTAMP
+
+def _get_output_dir(optimization_setup) -> str:
+    """Visualization directory of the dataset currently being optimized.
+
+    Derived from the dataset input folder ``analysis.dataset``
+    (``.../<dataset_root>/data/<name>``) so that figures and history stores land
+    in ``<dataset_root>/visualization`` of the *respective* dataset instead of a
+    hard-coded path. Mirrors the output location used in ``run_and_visualize``.
+    """
+    from pathlib import Path
+
+    dataset = Path(optimization_setup.analysis.dataset)
+    return str(dataset.parent.parent / "visualization")
+
+def _get_run_output_dir(optimization_setup):
+    """Timestamped per-run subfolder under the dataset's visualization dir.
+
+    Created on demand and shared by every figure / CSV of one program run.
+    """
+    from pathlib import Path
+
+    out = Path(_get_output_dir(optimization_setup)) / _get_run_timestamp()
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
 # general helper functions
 def _normalize_interval(optimization_setup):
     """interval between the optimized years for normalizing the dual variables ``.
@@ -1027,6 +1070,7 @@ def calculate_profitability(optimization_setup) -> pd.Series:
     return profitability
 
 
+
 # bias normalization
 def get_npc_capex_coefficient(optimization_setup) -> pd.Series:
     """Per-GW coefficient that maps a capacity addition onto its CAPEX share of
@@ -1202,7 +1246,7 @@ def get_min_coefficient_profitability_ratio(optimization_setup) -> float:
 
 
 # objective modification
-def apply_profitability_bias_objective(optimization_setup, weight: float = 1.0) -> None:
+def apply_profitability_bias_objective(optimization_setup, weight: float = 0.5) -> None:
     """Replace the model objective with total NPC penalized by a profitability bias.
 
     Modifies the already-constructed objective in place using the
@@ -1273,10 +1317,123 @@ def apply_profitability_bias_objective(optimization_setup, weight: float = 1.0) 
 
 
 
-#visualization
+#visualization and analysis output
+def save_profitability_components(optimization_setup, output_dir=None) -> pd.DataFrame:
+    """Save all profitability components of the current step as a CSV.
+
+    Collects every component that makes up the net profitability — discounted
+    revenue, CAPEX, fixed and variable OPEX, input-carrier cost, technology and
+    carrier CO2 cost, and the resulting net profitability — aggregated to
+    ``(set_conversion_technologies, set_nodes)`` and tagged with the decision
+    year of the current optimization step.
+
+    The rows are **appended** to ``profitability_components.csv`` in the
+    timestamped per-run folder (``<dataset>/visualization/<timestamp>/``), so
+    after a full rolling-horizon run the file holds every step's values and can
+    be reused later (e.g. by ``run_and_visualize``) without recomputation.
+
+    Args:
+        optimization_setup: solved optimization setup of the current step.
+        output_dir: root visualization directory; defaults to the dataset's
+            ``visualization`` folder derived from ``analysis.dataset``.
+
+    Returns:
+        ``pd.DataFrame`` with one row per (tech, node) and the components written
+        for this step.
+    """
+    year = int(max(optimization_setup.sets["set_time_steps_yearly"]))
+
+    # components indexed by (set_technologies, *_carriers, set_nodes) are summed
+    # over carriers and renamed to the (set_conversion_technologies, set_nodes) index
+    def _by_tech_node(series):
+        return (
+            series
+            .groupby(level=["set_technologies", "set_nodes"])
+            .sum()
+            .rename_axis(index={"set_technologies": "set_conversion_technologies"})
+        )
+
+    revenue = _by_tech_node(calculate_revenue(optimization_setup))
+    capex = get_capex(optimization_setup)
+    fixed_opex = get_fixed_opex_discounted(optimization_setup)
+    variable_opex = get_variable_opex_discounted(optimization_setup)
+    input_carrier_cost = _by_tech_node(calculate_input_carrier_cost(optimization_setup))
+    tech_co2_cost = get_tech_co2_cost_discounted(optimization_setup)
+    carrier_co2_cost = _by_tech_node(get_carrier_co2_cost_discounted(optimization_setup))
+
+    df = pd.DataFrame(
+        {
+            "revenue": revenue,
+            "capex": capex,
+            "fixed_opex": fixed_opex,
+            "variable_opex": variable_opex,
+            "input_carrier_cost": input_carrier_cost,
+            "tech_co2_cost": tech_co2_cost,
+            "carrier_co2_cost": carrier_co2_cost,
+        }
+    ).fillna(0.0)
+
+    # net profitability = revenue - all cost components (mirrors calculate_profitability)
+    cost_cols = [
+        "capex",
+        "fixed_opex",
+        "variable_opex",
+        "input_carrier_cost",
+        "tech_co2_cost",
+        "carrier_co2_cost",
+    ]
+    df["profitability"] = df["revenue"] - df[cost_cols].sum(axis=1)
+
+    df.index = df.index.set_names(["set_conversion_technologies", "set_nodes"])
+    df = df.reset_index()
+
+    # tag each technology with its output, input and reference carriers
+    # (a technology may have several carriers -> joined with ", ")
+    sets = optimization_setup.sets
+
+    def _carriers(mapping, tech):
+        try:
+            vals = mapping[tech]
+        except (KeyError, TypeError):
+            return ""
+        return ", ".join(str(c) for c in vals)
+
+    techs = df["set_conversion_technologies"]
+    df.insert(
+        1, "output_carrier",
+        techs.map(lambda t: _carriers(sets["set_output_carriers"], t)),
+    )
+    df.insert(
+        2, "input_carrier",
+        techs.map(lambda t: _carriers(sets["set_input_carriers"], t)),
+    )
+    df.insert(
+        3, "reference_carrier",
+        techs.map(lambda t: _carriers(sets["set_reference_carriers"], t)),
+    )
+
+    df.insert(0, "decision_year", year)
+
+    if output_dir is None:
+        out = _get_run_output_dir(optimization_setup)
+    else:
+        from pathlib import Path
+
+        out = Path(output_dir) / _get_run_timestamp()
+        out.mkdir(parents=True, exist_ok=True)
+
+    csv_path = out / "profitability_components.csv"
+    header = not csv_path.exists()
+    df.to_csv(csv_path, mode="a", header=header, index=False)
+    print(
+        f"Saved profitability components ({len(df)} rows, decision year {year}) "
+        f"to {csv_path}"
+    )
+    return df
+
 def visualization(
     optimization_setup,
-    output_dir: str = r"D:\Students\ssambale_jwiegner\Crystal-Ball\visualization",
+    output_dir: str | None = None,
 ) -> None:
     """Generate and save investment-decision visualizations.
 
@@ -1289,6 +1446,10 @@ def visualization(
     different carriers / optimization periods do not overwrite each other:
     - ``profitability_breakdown_<carrier>_<year>.png``: revenue vs. stacked costs + net-profit marker per tech/node
     - ``profitability_net_<carrier>_<year>.png``: net profit bar chart, color-coded profitable / loss
+
+    All plots of one program run are written into a timestamped subfolder of
+    the dataset's ``visualization`` directory (shared across every optimization
+    step of that run). ``output_dir`` overrides that root if given.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -1296,8 +1457,12 @@ def visualization(
     import matplotlib.patches as mpatches
     from pathlib import Path
 
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    # per-run timestamped subfolder, identical for all steps of one program run
+    if output_dir is None:
+        out = _get_run_output_dir(optimization_setup)
+    else:
+        out = Path(output_dir) / _get_run_timestamp()
+        out.mkdir(parents=True, exist_ok=True)
 
     year = max(optimization_setup.sets["set_time_steps_yearly"])
 
