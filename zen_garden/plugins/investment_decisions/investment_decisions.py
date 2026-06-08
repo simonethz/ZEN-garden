@@ -996,7 +996,7 @@ def get_carrier_co2_cost_discounted(optimization_setup) -> pd.Series:
     return result
 
 # profitability calculation
-def calculate_profitability(optimization_setup) -> pd.Series:
+def calculate_profitability(optimization_setup) -> pd.DataFrame:
     """Calculate profitability of the capacity addition as revenue minus costs.
 
     Costs include CAPEX, OPEX (fixed and variable), input-carrier cost and CO2
@@ -1004,9 +1004,16 @@ def calculate_profitability(optimization_setup) -> pd.Series:
     investment delay and discounting principles are applied as in the
     revenue and cost calculations.
 
+    Zero-revenue (tech, node) pairs have their profitability replaced by the
+    average profitability of revenue-positive nodes of the same technology (if
+    any exist); such entries are flagged in the ``values_changed`` column.
+
     Returns:
-        pandas.Series indexed by (``set_conversion_technologies``, ``set_nodes``)
-        with the discounted profitability in model money units.
+        ``pd.DataFrame`` indexed by (``set_conversion_technologies``,
+        ``set_nodes``) with columns ``revenue``, ``capex``, ``fixed_opex``,
+        ``variable_opex``, ``input_carrier_cost``, ``tech_co2_cost``,
+        ``carrier_co2_cost``, ``profitability``, and ``values_changed``
+        (bool, True when the profitability was filled from peer nodes).
     """
     revenue = calculate_revenue(optimization_setup)
     capex = get_capex(optimization_setup)
@@ -1018,24 +1025,17 @@ def calculate_profitability(optimization_setup) -> pd.Series:
 
     # revenue and input_carrier_cost are indexed by (set_technologies, *_carriers, set_nodes);
     # sum over carriers and rename to match the (set_conversion_technologies, set_nodes) index.
-    revenue_by_tech_node = (
-        revenue
-        .groupby(level=["set_technologies", "set_nodes"])
-        .sum()
-        .rename_axis(index={"set_technologies": "set_conversion_technologies"})
-    )
-    input_carrier_cost_by_tech_node = (
-        input_carrier_cost
-        .groupby(level=["set_technologies", "set_nodes"])
-        .sum()
-        .rename_axis(index={"set_technologies": "set_conversion_technologies"})
-    )
-    carrier_co2_cost_by_tech_node = (
-        carrier_co2_cost
-        .groupby(level=["set_technologies", "set_nodes"])
-        .sum()
-        .rename_axis(index={"set_technologies": "set_conversion_technologies"})
-    )
+    def _by_tech_node(series):
+        return (
+            series
+            .groupby(level=["set_technologies", "set_nodes"])
+            .sum()
+            .rename_axis(index={"set_technologies": "set_conversion_technologies"})
+        )
+
+    revenue_by_tech_node = _by_tech_node(revenue)
+    input_carrier_cost_by_tech_node = _by_tech_node(input_carrier_cost)
+    carrier_co2_cost_by_tech_node = _by_tech_node(carrier_co2_cost)
 
     profitability = revenue_by_tech_node.subtract(capex, fill_value=0)
     profitability = profitability.subtract(fixed_opex, fill_value=0)
@@ -1045,29 +1045,72 @@ def calculate_profitability(optimization_setup) -> pd.Series:
     profitability = profitability.subtract(carrier_co2_cost_by_tech_node, fill_value=0)
     profitability.name = "profitability"
 
+    values_changed = pd.Series(False, index=profitability.index, name="values_changed")
+
+    # For (tech, node) pairs with 0 revenue, replace profitability with the
+    # average profitability of revenue-positive nodes of the same technology.
+    # If no such peers exist, the value is left unchanged.
+    zero_rev_pairs = [
+        idx for idx in profitability.index
+        if revenue_by_tech_node.get(idx, 0.0) == 0.0
+    ]
+    for idx in zero_rev_pairs:
+        tech, node = idx
+        peer_profits = [
+            float(profitability.loc[peer_idx])
+            for peer_idx in profitability.index
+            if peer_idx[0] == tech
+            and peer_idx != idx
+            and revenue_by_tech_node.get(peer_idx, 0.0) > 0.0
+        ]
+        if peer_profits:
+            fill_val = float(np.mean(peer_profits))
+            profitability.loc[idx] = fill_val
+            values_changed.loc[idx] = True
+            print(
+                f"Profitability fill: ({tech}, {node}) has 0 revenue → "
+                f"replaced with avg of revenue-positive peers = {fill_val:.2f}"
+            )
+
+    components = pd.DataFrame(
+        {
+            "revenue": revenue_by_tech_node,
+            "capex": capex,
+            "fixed_opex": fixed_opex,
+            "variable_opex": variable_opex,
+            "input_carrier_cost": input_carrier_cost_by_tech_node,
+            "tech_co2_cost": tech_co2_cost,
+            "carrier_co2_cost": carrier_co2_cost_by_tech_node,
+            "profitability": profitability,
+        }
+    ).fillna(0.0)
+    components["values_changed"] = values_changed.reindex(components.index, fill_value=False)
+
+    # For manually filled entries all cost/revenue components are meaningless
+    # (they came from a different node), so set them to NaN.
+    component_cols = [
+        "revenue", "capex", "fixed_opex", "variable_opex",
+        "input_carrier_cost", "tech_co2_cost", "carrier_co2_cost",
+    ]
+    components.loc[components["values_changed"], component_cols] = np.nan
+
     print(
         f"\n--- Profitability of Capacity Additions ---\n"
         f"{'Tech / Node':<45} {'Revenue':>12} {'CAPEX':>12} "
         f"{'Fixed OPEX':>12} {'Var OPEX':>12} {'Input Cost':>12} "
-        f"{'Tech CO2':>12} {'Carrier CO2':>12} {'Profit':>12}\n"
-        + "-" * 149
+        f"{'Tech CO2':>12} {'Carrier CO2':>12} {'Profit':>12} {'Changed':>9}\n"
+        + "-" * 159
     )
-    for idx in profitability.index:
-        rev_val = revenue_by_tech_node.get(idx, 0.0)
-        cap_val = capex.get(idx, 0.0)
-        fop_val = fixed_opex.get(idx, 0.0)
-        vop_val = variable_opex.get(idx, 0.0)
-        icc_val = input_carrier_cost_by_tech_node.get(idx, 0.0)
-        tco2_val = tech_co2_cost.get(idx, 0.0)
-        cco2_val = carrier_co2_cost_by_tech_node.get(idx, 0.0)
-        pro_val = profitability[idx]
+    for idx, row in components.iterrows():
         print(
-            f"{str(idx):<45} {rev_val:>12.2f} {cap_val:>12.2f} "
-            f"{fop_val:>12.2f} {vop_val:>12.2f} {icc_val:>12.2f} "
-            f"{tco2_val:>12.2f} {cco2_val:>12.2f} {pro_val:>12.2f}"
+            f"{str(idx):<45} {row['revenue']:>12.2f} {row['capex']:>12.2f} "
+            f"{row['fixed_opex']:>12.2f} {row['variable_opex']:>12.2f} "
+            f"{row['input_carrier_cost']:>12.2f} {row['tech_co2_cost']:>12.2f} "
+            f"{row['carrier_co2_cost']:>12.2f} {row['profitability']:>12.2f} "
+            f"{'*' if row['values_changed'] else '':>9}"
         )
     print()
-    return profitability
+    return components
 
 
 
@@ -1318,24 +1361,25 @@ def apply_profitability_bias_objective(optimization_setup, weight: float = 0.5) 
 
 
 #visualization and analysis output
-def save_profitability_components(optimization_setup, output_dir=None) -> pd.DataFrame:
+def save_profitability_components(
+    optimization_setup,
+    output_dir=None,
+    components_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Save all profitability components of the current step as a CSV.
 
-    Collects every component that makes up the net profitability — discounted
-    revenue, CAPEX, fixed and variable OPEX, input-carrier cost, technology and
-    carrier CO2 cost, and the resulting net profitability — aggregated to
-    ``(set_conversion_technologies, set_nodes)`` and tagged with the decision
-    year of the current optimization step.
-
-    The rows are **appended** to ``profitability_components.csv`` in the
-    timestamped per-run folder (``<dataset>/visualization/<timestamp>/``), so
-    after a full rolling-horizon run the file holds every step's values and can
-    be reused later (e.g. by ``run_and_visualize``) without recomputation.
+    Calls ``calculate_profitability`` to obtain every component (revenue, CAPEX,
+    fixed/variable OPEX, input-carrier cost, CO2 costs, net profitability, and
+    the ``values_changed`` flag) and appends them — tagged with the decision year
+    and carrier metadata — to ``profitability_components.csv`` in the timestamped
+    per-run folder.
 
     Args:
         optimization_setup: solved optimization setup of the current step.
         output_dir: root visualization directory; defaults to the dataset's
             ``visualization`` folder derived from ``analysis.dataset``.
+        components_df: pre-computed result of ``calculate_profitability``; when
+            provided the function is not called again, avoiding double computation.
 
     Returns:
         ``pd.DataFrame`` with one row per (tech, node) and the components written
@@ -1343,52 +1387,13 @@ def save_profitability_components(optimization_setup, output_dir=None) -> pd.Dat
     """
     year = int(max(optimization_setup.sets["set_time_steps_yearly"]))
 
-    # components indexed by (set_technologies, *_carriers, set_nodes) are summed
-    # over carriers and renamed to the (set_conversion_technologies, set_nodes) index
-    def _by_tech_node(series):
-        return (
-            series
-            .groupby(level=["set_technologies", "set_nodes"])
-            .sum()
-            .rename_axis(index={"set_technologies": "set_conversion_technologies"})
-        )
+    if components_df is None:
+        components_df = calculate_profitability(optimization_setup)
 
-    revenue = _by_tech_node(calculate_revenue(optimization_setup))
-    capex = get_capex(optimization_setup)
-    fixed_opex = get_fixed_opex_discounted(optimization_setup)
-    variable_opex = get_variable_opex_discounted(optimization_setup)
-    input_carrier_cost = _by_tech_node(calculate_input_carrier_cost(optimization_setup))
-    tech_co2_cost = get_tech_co2_cost_discounted(optimization_setup)
-    carrier_co2_cost = _by_tech_node(get_carrier_co2_cost_discounted(optimization_setup))
-
-    df = pd.DataFrame(
-        {
-            "revenue": revenue,
-            "capex": capex,
-            "fixed_opex": fixed_opex,
-            "variable_opex": variable_opex,
-            "input_carrier_cost": input_carrier_cost,
-            "tech_co2_cost": tech_co2_cost,
-            "carrier_co2_cost": carrier_co2_cost,
-        }
-    ).fillna(0.0)
-
-    # net profitability = revenue - all cost components (mirrors calculate_profitability)
-    cost_cols = [
-        "capex",
-        "fixed_opex",
-        "variable_opex",
-        "input_carrier_cost",
-        "tech_co2_cost",
-        "carrier_co2_cost",
-    ]
-    df["profitability"] = df["revenue"] - df[cost_cols].sum(axis=1)
-
+    df = components_df.copy()
     df.index = df.index.set_names(["set_conversion_technologies", "set_nodes"])
     df = df.reset_index()
 
-    # tag each technology with its output, input and reference carriers
-    # (a technology may have several carriers -> joined with ", ")
     sets = optimization_setup.sets
 
     def _carriers(mapping, tech):
@@ -1411,7 +1416,6 @@ def save_profitability_components(optimization_setup, output_dir=None) -> pd.Dat
         3, "reference_carrier",
         techs.map(lambda t: _carriers(sets["set_reference_carriers"], t)),
     )
-
     df.insert(0, "decision_year", year)
 
     if output_dir is None:
@@ -1467,7 +1471,7 @@ def visualization(
     year = max(optimization_setup.sets["set_time_steps_yearly"])
 
     # --- net profitability via central function ---
-    pro = calculate_profitability(optimization_setup)
+    pro = calculate_profitability(optimization_setup)["profitability"]
 
     idx = pro.index
     if idx.empty:

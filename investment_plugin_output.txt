@@ -30190,3 +30190,591 @@ Tech / Node                                        Revenue        CAPEX   Fixed 
 ('wind_onshore', 'IT')                              938.74      1098.78       295.90        11.82         0.00         0.00         0.00      -467.75
 
 Saved profitability components (24 rows, decision year 1) to ..\Crystal-Ball-small\visualization\2026-06-08_11-57-00\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:13:22 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.060940
+             DE                     0.049136
+             IT                     0.057517
+heat         CH                     0.076444
+             DE                     0.060093
+             IT                     0.039993
+natural_gas  CH                     0.039793
+             DE                     0.039793
+             IT                     0.039793
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -966.93
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -966.93
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                2107.65       930.13       258.32         0.00       984.84         0.00         0.00       -65.64
+('heat_pump', 'DE')                                1726.58       930.13       258.32         0.00       603.77         0.00         0.00       -65.64
+('heat_pump', 'IT')                                1349.13       930.13       258.32         0.00       737.93         0.00         0.00      -577.25
+('natural_gas_boiler', 'CH')                       2235.98       487.19       233.65         0.00      1558.46         0.00       790.96      -834.27
+('natural_gas_boiler', 'DE')                       1831.71       487.19       233.65         0.00      1477.62         0.00       749.93     -1116.68
+('natural_gas_boiler', 'IT')                       1364.50       487.19       233.65         0.00      1364.50         0.00       692.52     -1413.36
+('natural_gas_turbine', 'CH')                      6224.43       786.12       354.46       211.65      5531.68         0.00      2807.47     -3466.94
+('natural_gas_turbine', 'DE')                      2631.04       786.12       354.46        97.28      2542.59         0.00      1290.43     -2439.85
+('natural_gas_turbine', 'IT')                      2224.60       786.12       354.46        82.25      2149.81         0.00      1091.09     -2239.14
+('photovoltaics', 'CH')                             381.42       543.60       187.44         0.43         0.00         0.00         0.00      -350.05
+('photovoltaics', 'DE')                             175.48       543.60       187.44         0.37         0.00         0.00         0.00      -555.93
+('photovoltaics', 'IT')                             479.83       543.60       187.44         0.51         0.00         0.00         0.00      -251.72
+('reservoir_hydro', 'CH')                          2220.95      2527.34       745.86        70.15         0.00         0.00         0.00     -1122.40
+('reservoir_hydro', 'DE')                          6054.86      2527.34       745.86       124.17         0.00         0.00         0.00      2657.49
+('reservoir_hydro', 'IT')                          3568.29      2527.34       745.86       107.47         0.00         0.00         0.00       187.62
+('run-of-river_hydro', 'CH')                       2319.17      2921.91       708.16        57.51         0.00         0.00         0.00     -1368.40
+('run-of-river_hydro', 'DE')                       5551.14      2921.91       708.16       159.91         0.00         0.00         0.00      1761.16
+('run-of-river_hydro', 'IT')                       3692.66      2921.91       708.16       136.96         0.00         0.00         0.00       -74.37
+('wind_offshore', 'CH')                               0.00      2397.26       738.31         0.00         0.00         0.00         0.00      -966.93
+('wind_offshore', 'DE')                            2225.06      2397.26       738.31        56.41         0.00         0.00         0.00      -966.93
+('wind_offshore', 'IT')                               0.00      2397.26       738.31         0.00         0.00         0.00         0.00      -966.93
+('wind_onshore', 'CH')                              548.59      1133.43       303.30         5.80         0.00         0.00         0.00      -893.94
+('wind_onshore', 'DE')                             1374.51      1133.43       303.30        18.40         0.00         0.00         0.00       -80.61
+('wind_onshore', 'IT')                             1053.41      1133.43       303.30        12.21         0.00         0.00         0.00      -395.53
+
+Saved profitability components (24 rows, decision year 0) to D:\Students\ssambale_jwiegner\Crystal-Ball-small\visualization\2026-06-08_16-13-24\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:13:53 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.055436
+             DE                     0.046341
+             IT                     0.050722
+heat         CH                     0.074376
+             DE                     0.064507
+             IT                     0.079476
+natural_gas  CH                     0.031773
+             DE                     0.031773
+             IT                     0.031773
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -829.62
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -829.62
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                1954.21       868.63       212.82         0.00       920.06         0.00         0.00       -47.31
+('heat_pump', 'DE')                                1670.44       868.63       212.82         0.00       636.29         0.00         0.00       -47.31
+('heat_pump', 'IT')                                1780.05       868.63       212.82         0.00       656.94         0.00         0.00        41.65
+('natural_gas_boiler', 'CH')                       2073.19       485.11       232.98         0.00      1244.36         0.00       790.96      -680.22
+('natural_gas_boiler', 'DE')                       1772.15       485.11       232.98         0.00      1179.81         0.00       749.93      -875.69
+('natural_gas_boiler', 'IT')                       1888.43       485.11       232.98         0.00      1142.81         0.00       726.41      -698.89
+('natural_gas_turbine', 'CH')                      5282.95       774.97       350.51       208.88      4416.79         0.00      2807.47     -3275.66
+('natural_gas_turbine', 'DE')                      3126.17       774.97       350.51       140.45      2969.98         0.00      1887.83     -2997.56
+('natural_gas_turbine', 'IT')                      3191.32       774.97       350.51       144.70      3059.76         0.00      1944.90     -3083.51
+('photovoltaics', 'CH')                             580.91       459.66       167.13         0.38         0.00         0.00         0.00       -46.26
+('photovoltaics', 'DE')                             194.80       459.66       167.13         0.32         0.00         0.00         0.00      -432.32
+('photovoltaics', 'IT')                             646.85       459.66       167.13         0.45         0.00         0.00         0.00        19.61
+('reservoir_hydro', 'CH')                          2049.73      2527.20       745.82        70.15         0.00         0.00         0.00     -1293.44
+('reservoir_hydro', 'DE')                          5406.84      2527.20       745.82       124.17         0.00         0.00         0.00      2009.65
+('reservoir_hydro', 'IT')                          3327.30      2527.20       745.82       107.46         0.00         0.00         0.00       -53.18
+('run-of-river_hydro', 'CH')                       2115.33      2914.48       704.89        64.29         0.00         0.00         0.00     -1568.33
+('run-of-river_hydro', 'DE')                       5073.90      2914.48       704.89       159.76         0.00         0.00         0.00      1294.77
+('run-of-river_hydro', 'IT')                       3351.65      2914.48       704.89       119.76         0.00         0.00         0.00      -387.48
+('wind_offshore', 'CH')                               0.00      2280.72       675.20         0.00         0.00         0.00         0.00      -829.62
+('wind_offshore', 'DE')                            2178.32      2280.72       675.20        52.01         0.00         0.00         0.00      -829.62
+('wind_offshore', 'IT')                               0.00      2280.72       675.20         0.00         0.00         0.00         0.00      -829.62
+('wind_onshore', 'CH')                              501.85      1098.78       295.90         5.62         0.00         0.00         0.00      -898.45
+('wind_onshore', 'DE')                             1350.48      1098.78       295.90        17.77         0.00         0.00         0.00       -61.97
+('wind_onshore', 'IT')                              934.08      1098.78       295.90        11.82         0.00         0.00         0.00      -472.42
+
+Saved profitability components (24 rows, decision year 1) to ..\Crystal-Ball-small\visualization\2026-06-08_16-13-24\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:14:23 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.069472
+             DE                     0.052961
+             IT                     0.068968
+heat         CH                     0.077220
+             DE                     0.066241
+             IT                     0.079984
+natural_gas  CH                     0.036550
+             DE                     0.036550
+             IT                     0.036550
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -360.69
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -360.69
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                2200.51       820.94       181.29         0.00      1145.27         0.00         0.00        53.01
+('heat_pump', 'DE')                                1785.28       820.94       181.29         0.00       730.05         0.00         0.00        53.01
+('heat_pump', 'IT')                                1961.32       820.94       181.29         0.00       928.58         0.00         0.00        30.51
+('natural_gas_boiler', 'CH')                       2334.49       483.10       232.18         0.00      1431.44         0.00       790.96      -603.20
+('natural_gas_boiler', 'DE')                       1893.98       483.10       232.18         0.00      1357.19         0.00       749.93      -928.43
+('natural_gas_boiler', 'IT')                       2080.74       483.10       232.18         0.00      1314.63         0.00       726.41      -675.58
+('natural_gas_turbine', 'CH')                      7489.01       763.97       346.25       206.09      5080.85         0.00      2807.47     -1715.62
+('natural_gas_turbine', 'DE')                      4819.46       763.97       346.25       187.87      4631.60         0.00      2559.24     -3669.46
+('natural_gas_turbine', 'IT')                      8886.94       763.97       346.25       262.99      6483.69         0.00      3582.63     -2552.59
+('photovoltaics', 'CH')                             428.57       400.90       150.43         0.34         0.00         0.00         0.00      -123.09
+('photovoltaics', 'DE')                             224.56       400.90       150.43         0.29         0.00         0.00         0.00      -327.05
+('photovoltaics', 'IT')                             565.31       400.90       150.43         0.25         0.00         0.00         0.00        13.74
+('reservoir_hydro', 'CH')                          2346.43      2526.96       745.77        45.85         0.00         0.00         0.00      -972.15
+('reservoir_hydro', 'DE')                          6172.08      2526.96       745.77       138.21         0.00         0.00         0.00      2761.14
+('reservoir_hydro', 'IT')                          4123.33      2526.96       745.77        65.53         0.00         0.00         0.00       785.07
+('run-of-river_hydro', 'CH')                       2518.01      2905.96       702.06        57.37         0.00         0.00         0.00     -1147.39
+('run-of-river_hydro', 'DE')                       5800.45      2905.96       702.06       172.97         0.00         0.00         0.00      2019.46
+('run-of-river_hydro', 'IT')                       4305.27      2905.96       702.06        93.01         0.00         0.00         0.00       604.23
+('wind_offshore', 'CH')                               0.00      2176.37       627.97         0.00         0.00         0.00         0.00      -360.69
+('wind_offshore', 'DE')                            2493.36      2176.37       627.97        49.70         0.00         0.00         0.00      -360.69
+('wind_offshore', 'IT')                               0.00      2176.37       627.97         0.00         0.00         0.00         0.00      -360.69
+('wind_onshore', 'CH')                              636.54      1057.43       286.08         5.42         0.00         0.00         0.00      -712.40
+('wind_onshore', 'DE')                             1545.84      1057.43       286.08        17.15         0.00         0.00         0.00       185.18
+('wind_onshore', 'IT')                             1307.79      1057.43       286.08         9.00         0.00         0.00         0.00       -44.72
+
+Saved profitability components (24 rows, decision year 2) to ..\Crystal-Ball-small\visualization\2026-06-08_16-13-24\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:18:21 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.060940
+             DE                     0.049136
+             IT                     0.057517
+heat         CH                     0.076444
+             DE                     0.060093
+             IT                     0.039993
+natural_gas  CH                     0.039793
+             DE                     0.039793
+             IT                     0.039793
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -966.93
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -966.93
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                2107.65       930.13       258.32         0.00       984.84         0.00         0.00       -65.64
+('heat_pump', 'DE')                                1726.58       930.13       258.32         0.00       603.77         0.00         0.00       -65.64
+('heat_pump', 'IT')                                1349.13       930.13       258.32         0.00       737.93         0.00         0.00      -577.25
+('natural_gas_boiler', 'CH')                       2235.98       487.19       233.65         0.00      1558.46         0.00       790.96      -834.27
+('natural_gas_boiler', 'DE')                       1831.71       487.19       233.65         0.00      1477.62         0.00       749.93     -1116.68
+('natural_gas_boiler', 'IT')                       1364.50       487.19       233.65         0.00      1364.50         0.00       692.52     -1413.36
+('natural_gas_turbine', 'CH')                      6224.43       786.12       354.46       211.65      5531.68         0.00      2807.47     -3466.94
+('natural_gas_turbine', 'DE')                      2631.04       786.12       354.46        97.28      2542.59         0.00      1290.43     -2439.85
+('natural_gas_turbine', 'IT')                      2224.60       786.12       354.46        82.25      2149.81         0.00      1091.09     -2239.14
+('photovoltaics', 'CH')                             381.42       543.60       187.44         0.43         0.00         0.00         0.00      -350.05
+('photovoltaics', 'DE')                             175.48       543.60       187.44         0.37         0.00         0.00         0.00      -555.93
+('photovoltaics', 'IT')                             479.83       543.60       187.44         0.51         0.00         0.00         0.00      -251.72
+('reservoir_hydro', 'CH')                          2220.95      2527.34       745.86        70.15         0.00         0.00         0.00     -1122.40
+('reservoir_hydro', 'DE')                          6054.86      2527.34       745.86       124.17         0.00         0.00         0.00      2657.49
+('reservoir_hydro', 'IT')                          3568.29      2527.34       745.86       107.47         0.00         0.00         0.00       187.62
+('run-of-river_hydro', 'CH')                       2319.17      2921.91       708.16        57.51         0.00         0.00         0.00     -1368.40
+('run-of-river_hydro', 'DE')                       5551.14      2921.91       708.16       159.91         0.00         0.00         0.00      1761.16
+('run-of-river_hydro', 'IT')                       3692.66      2921.91       708.16       136.96         0.00         0.00         0.00       -74.37
+('wind_offshore', 'CH')                               0.00      2397.26       738.31         0.00         0.00         0.00         0.00      -966.93
+('wind_offshore', 'DE')                            2225.06      2397.26       738.31        56.41         0.00         0.00         0.00      -966.93
+('wind_offshore', 'IT')                               0.00      2397.26       738.31         0.00         0.00         0.00         0.00      -966.93
+('wind_onshore', 'CH')                              548.59      1133.43       303.30         5.80         0.00         0.00         0.00      -893.94
+('wind_onshore', 'DE')                             1374.51      1133.43       303.30        18.40         0.00         0.00         0.00       -80.61
+('wind_onshore', 'IT')                             1053.41      1133.43       303.30        12.21         0.00         0.00         0.00      -395.53
+
+Saved profitability components (24 rows, decision year 0) to D:\Students\ssambale_jwiegner\Crystal-Ball-small\visualization\2026-06-08_16-18-23\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:18:52 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.055436
+             DE                     0.046341
+             IT                     0.050722
+heat         CH                     0.074376
+             DE                     0.064507
+             IT                     0.079476
+natural_gas  CH                     0.031773
+             DE                     0.031773
+             IT                     0.031773
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -829.62
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -829.62
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                1954.21       868.63       212.82         0.00       920.06         0.00         0.00       -47.31
+('heat_pump', 'DE')                                1670.44       868.63       212.82         0.00       636.29         0.00         0.00       -47.31
+('heat_pump', 'IT')                                1780.05       868.63       212.82         0.00       656.94         0.00         0.00        41.65
+('natural_gas_boiler', 'CH')                       2073.19       485.11       232.98         0.00      1244.36         0.00       790.96      -680.22
+('natural_gas_boiler', 'DE')                       1772.15       485.11       232.98         0.00      1179.81         0.00       749.93      -875.69
+('natural_gas_boiler', 'IT')                       1888.43       485.11       232.98         0.00      1142.81         0.00       726.41      -698.89
+('natural_gas_turbine', 'CH')                      5282.95       774.97       350.51       208.88      4416.79         0.00      2807.47     -3275.66
+('natural_gas_turbine', 'DE')                      3126.17       774.97       350.51       140.45      2969.98         0.00      1887.83     -2997.56
+('natural_gas_turbine', 'IT')                      3191.32       774.97       350.51       144.70      3059.76         0.00      1944.90     -3083.51
+('photovoltaics', 'CH')                             580.91       459.66       167.13         0.38         0.00         0.00         0.00       -46.26
+('photovoltaics', 'DE')                             194.80       459.66       167.13         0.32         0.00         0.00         0.00      -432.32
+('photovoltaics', 'IT')                             646.85       459.66       167.13         0.45         0.00         0.00         0.00        19.61
+('reservoir_hydro', 'CH')                          2049.73      2527.20       745.82        70.15         0.00         0.00         0.00     -1293.44
+('reservoir_hydro', 'DE')                          5406.84      2527.20       745.82       124.17         0.00         0.00         0.00      2009.65
+('reservoir_hydro', 'IT')                          3327.30      2527.20       745.82       107.46         0.00         0.00         0.00       -53.18
+('run-of-river_hydro', 'CH')                       2115.33      2914.48       704.89        64.29         0.00         0.00         0.00     -1568.33
+('run-of-river_hydro', 'DE')                       5073.90      2914.48       704.89       159.76         0.00         0.00         0.00      1294.77
+('run-of-river_hydro', 'IT')                       3351.65      2914.48       704.89       119.76         0.00         0.00         0.00      -387.48
+('wind_offshore', 'CH')                               0.00      2280.72       675.20         0.00         0.00         0.00         0.00      -829.62
+('wind_offshore', 'DE')                            2178.32      2280.72       675.20        52.01         0.00         0.00         0.00      -829.62
+('wind_offshore', 'IT')                               0.00      2280.72       675.20         0.00         0.00         0.00         0.00      -829.62
+('wind_onshore', 'CH')                              501.85      1098.78       295.90         5.62         0.00         0.00         0.00      -898.45
+('wind_onshore', 'DE')                             1350.48      1098.78       295.90        17.77         0.00         0.00         0.00       -61.97
+('wind_onshore', 'IT')                              934.08      1098.78       295.90        11.82         0.00         0.00         0.00      -472.42
+
+Saved profitability components (24 rows, decision year 1) to ..\Crystal-Ball-small\visualization\2026-06-08_16-18-23\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:19:22 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.069472
+             DE                     0.052961
+             IT                     0.068968
+heat         CH                     0.077220
+             DE                     0.066241
+             IT                     0.079984
+natural_gas  CH                     0.036550
+             DE                     0.036550
+             IT                     0.036550
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -360.69
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -360.69
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit
+-----------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                2200.51       820.94       181.29         0.00      1145.27         0.00         0.00        53.01
+('heat_pump', 'DE')                                1785.28       820.94       181.29         0.00       730.05         0.00         0.00        53.01
+('heat_pump', 'IT')                                1961.32       820.94       181.29         0.00       928.58         0.00         0.00        30.51
+('natural_gas_boiler', 'CH')                       2334.49       483.10       232.18         0.00      1431.44         0.00       790.96      -603.20
+('natural_gas_boiler', 'DE')                       1893.98       483.10       232.18         0.00      1357.19         0.00       749.93      -928.43
+('natural_gas_boiler', 'IT')                       2080.74       483.10       232.18         0.00      1314.63         0.00       726.41      -675.58
+('natural_gas_turbine', 'CH')                      7489.01       763.97       346.25       206.09      5080.85         0.00      2807.47     -1715.62
+('natural_gas_turbine', 'DE')                      4819.46       763.97       346.25       187.87      4631.60         0.00      2559.24     -3669.46
+('natural_gas_turbine', 'IT')                      8886.94       763.97       346.25       262.99      6483.69         0.00      3582.63     -2552.59
+('photovoltaics', 'CH')                             428.57       400.90       150.43         0.34         0.00         0.00         0.00      -123.09
+('photovoltaics', 'DE')                             224.56       400.90       150.43         0.29         0.00         0.00         0.00      -327.05
+('photovoltaics', 'IT')                             565.31       400.90       150.43         0.25         0.00         0.00         0.00        13.74
+('reservoir_hydro', 'CH')                          2346.43      2526.96       745.77        45.85         0.00         0.00         0.00      -972.15
+('reservoir_hydro', 'DE')                          6172.08      2526.96       745.77       138.21         0.00         0.00         0.00      2761.14
+('reservoir_hydro', 'IT')                          4123.33      2526.96       745.77        65.53         0.00         0.00         0.00       785.07
+('run-of-river_hydro', 'CH')                       2518.01      2905.96       702.06        57.37         0.00         0.00         0.00     -1147.39
+('run-of-river_hydro', 'DE')                       5800.45      2905.96       702.06       172.97         0.00         0.00         0.00      2019.46
+('run-of-river_hydro', 'IT')                       4305.27      2905.96       702.06        93.01         0.00         0.00         0.00       604.23
+('wind_offshore', 'CH')                               0.00      2176.37       627.97         0.00         0.00         0.00         0.00      -360.69
+('wind_offshore', 'DE')                            2493.36      2176.37       627.97        49.70         0.00         0.00         0.00      -360.69
+('wind_offshore', 'IT')                               0.00      2176.37       627.97         0.00         0.00         0.00         0.00      -360.69
+('wind_onshore', 'CH')                              636.54      1057.43       286.08         5.42         0.00         0.00         0.00      -712.40
+('wind_onshore', 'DE')                             1545.84      1057.43       286.08        17.15         0.00         0.00         0.00       185.18
+('wind_onshore', 'IT')                             1307.79      1057.43       286.08         9.00         0.00         0.00         0.00       -44.72
+
+Saved profitability components (24 rows, decision year 2) to ..\Crystal-Ball-small\visualization\2026-06-08_16-18-23\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:46:33 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.060940
+             DE                     0.049136
+             IT                     0.057517
+heat         CH                     0.076444
+             DE                     0.060093
+             IT                     0.039993
+natural_gas  CH                     0.039793
+             DE                     0.039793
+             IT                     0.039793
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -966.93
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -966.93
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit   Changed
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                2107.65       930.13       258.32         0.00       984.84         0.00         0.00       -65.64          
+('heat_pump', 'DE')                                1726.58       930.13       258.32         0.00       603.77         0.00         0.00       -65.64          
+('heat_pump', 'IT')                                1349.13       930.13       258.32         0.00       737.93         0.00         0.00      -577.25          
+('natural_gas_boiler', 'CH')                       2235.98       487.19       233.65         0.00      1558.46         0.00       790.96      -834.27          
+('natural_gas_boiler', 'DE')                       1831.71       487.19       233.65         0.00      1477.62         0.00       749.93     -1116.68          
+('natural_gas_boiler', 'IT')                       1364.50       487.19       233.65         0.00      1364.50         0.00       692.52     -1413.36          
+('natural_gas_turbine', 'CH')                      6224.43       786.12       354.46       211.65      5531.68         0.00      2807.47     -3466.94          
+('natural_gas_turbine', 'DE')                      2631.04       786.12       354.46        97.28      2542.59         0.00      1290.43     -2439.85          
+('natural_gas_turbine', 'IT')                      2224.60       786.12       354.46        82.25      2149.81         0.00      1091.09     -2239.14          
+('photovoltaics', 'CH')                             381.42       543.60       187.44         0.43         0.00         0.00         0.00      -350.05          
+('photovoltaics', 'DE')                             175.48       543.60       187.44         0.37         0.00         0.00         0.00      -555.93          
+('photovoltaics', 'IT')                             479.83       543.60       187.44         0.51         0.00         0.00         0.00      -251.72          
+('reservoir_hydro', 'CH')                          2220.95      2527.34       745.86        70.15         0.00         0.00         0.00     -1122.40          
+('reservoir_hydro', 'DE')                          6054.86      2527.34       745.86       124.17         0.00         0.00         0.00      2657.49          
+('reservoir_hydro', 'IT')                          3568.29      2527.34       745.86       107.47         0.00         0.00         0.00       187.62          
+('run-of-river_hydro', 'CH')                       2319.17      2921.91       708.16        57.51         0.00         0.00         0.00     -1368.40          
+('run-of-river_hydro', 'DE')                       5551.14      2921.91       708.16       159.91         0.00         0.00         0.00      1761.16          
+('run-of-river_hydro', 'IT')                       3692.66      2921.91       708.16       136.96         0.00         0.00         0.00       -74.37          
+('wind_offshore', 'CH')                               0.00      2397.26       738.31         0.00         0.00         0.00         0.00      -966.93         *
+('wind_offshore', 'DE')                            2225.06      2397.26       738.31        56.41         0.00         0.00         0.00      -966.93          
+('wind_offshore', 'IT')                               0.00      2397.26       738.31         0.00         0.00         0.00         0.00      -966.93         *
+('wind_onshore', 'CH')                              548.59      1133.43       303.30         5.80         0.00         0.00         0.00      -893.94          
+('wind_onshore', 'DE')                             1374.51      1133.43       303.30        18.40         0.00         0.00         0.00       -80.61          
+('wind_onshore', 'IT')                             1053.41      1133.43       303.30        12.21         0.00         0.00         0.00      -395.53          
+
+Saved profitability components (24 rows, decision year 0) to D:\Students\ssambale_jwiegner\Crystal-Ball-small\visualization\2026-06-08_16-46-34\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:47:03 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.055436
+             DE                     0.046341
+             IT                     0.050722
+heat         CH                     0.074376
+             DE                     0.064507
+             IT                     0.079476
+natural_gas  CH                     0.031773
+             DE                     0.031773
+             IT                     0.031773
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -829.62
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -829.62
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit   Changed
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                1954.21       868.63       212.82         0.00       920.06         0.00         0.00       -47.31          
+('heat_pump', 'DE')                                1670.44       868.63       212.82         0.00       636.29         0.00         0.00       -47.31          
+('heat_pump', 'IT')                                1780.05       868.63       212.82         0.00       656.94         0.00         0.00        41.65          
+('natural_gas_boiler', 'CH')                       2073.19       485.11       232.98         0.00      1244.36         0.00       790.96      -680.22          
+('natural_gas_boiler', 'DE')                       1772.15       485.11       232.98         0.00      1179.81         0.00       749.93      -875.69          
+('natural_gas_boiler', 'IT')                       1888.43       485.11       232.98         0.00      1142.81         0.00       726.41      -698.89          
+('natural_gas_turbine', 'CH')                      5282.95       774.97       350.51       208.88      4416.79         0.00      2807.47     -3275.66          
+('natural_gas_turbine', 'DE')                      3126.17       774.97       350.51       140.45      2969.98         0.00      1887.83     -2997.56          
+('natural_gas_turbine', 'IT')                      3191.32       774.97       350.51       144.70      3059.76         0.00      1944.90     -3083.51          
+('photovoltaics', 'CH')                             580.91       459.66       167.13         0.38         0.00         0.00         0.00       -46.26          
+('photovoltaics', 'DE')                             194.80       459.66       167.13         0.32         0.00         0.00         0.00      -432.32          
+('photovoltaics', 'IT')                             646.85       459.66       167.13         0.45         0.00         0.00         0.00        19.61          
+('reservoir_hydro', 'CH')                          2049.73      2527.20       745.82        70.15         0.00         0.00         0.00     -1293.44          
+('reservoir_hydro', 'DE')                          5406.84      2527.20       745.82       124.17         0.00         0.00         0.00      2009.65          
+('reservoir_hydro', 'IT')                          3327.30      2527.20       745.82       107.46         0.00         0.00         0.00       -53.18          
+('run-of-river_hydro', 'CH')                       2115.33      2914.48       704.89        64.29         0.00         0.00         0.00     -1568.33          
+('run-of-river_hydro', 'DE')                       5073.90      2914.48       704.89       159.76         0.00         0.00         0.00      1294.77          
+('run-of-river_hydro', 'IT')                       3351.65      2914.48       704.89       119.76         0.00         0.00         0.00      -387.48          
+('wind_offshore', 'CH')                               0.00      2280.72       675.20         0.00         0.00         0.00         0.00      -829.62         *
+('wind_offshore', 'DE')                            2178.32      2280.72       675.20        52.01         0.00         0.00         0.00      -829.62          
+('wind_offshore', 'IT')                               0.00      2280.72       675.20         0.00         0.00         0.00         0.00      -829.62         *
+('wind_onshore', 'CH')                              501.85      1098.78       295.90         5.62         0.00         0.00         0.00      -898.45          
+('wind_onshore', 'DE')                             1350.48      1098.78       295.90        17.77         0.00         0.00         0.00       -61.97          
+('wind_onshore', 'IT')                              934.08      1098.78       295.90        11.82         0.00         0.00         0.00      -472.42          
+
+Saved profitability components (24 rows, decision year 1) to ..\Crystal-Ball-small\visualization\2026-06-08_16-46-34\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:47:32 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.069472
+             DE                     0.052961
+             IT                     0.068968
+heat         CH                     0.077220
+             DE                     0.066241
+             IT                     0.079984
+natural_gas  CH                     0.036550
+             DE                     0.036550
+             IT                     0.036550
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -360.69
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -360.69
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit   Changed
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                2200.51       820.94       181.29         0.00      1145.27         0.00         0.00        53.01          
+('heat_pump', 'DE')                                1785.28       820.94       181.29         0.00       730.05         0.00         0.00        53.01          
+('heat_pump', 'IT')                                1961.32       820.94       181.29         0.00       928.58         0.00         0.00        30.51          
+('natural_gas_boiler', 'CH')                       2334.49       483.10       232.18         0.00      1431.44         0.00       790.96      -603.20          
+('natural_gas_boiler', 'DE')                       1893.98       483.10       232.18         0.00      1357.19         0.00       749.93      -928.43          
+('natural_gas_boiler', 'IT')                       2080.74       483.10       232.18         0.00      1314.63         0.00       726.41      -675.58          
+('natural_gas_turbine', 'CH')                      7489.01       763.97       346.25       206.09      5080.85         0.00      2807.47     -1715.62          
+('natural_gas_turbine', 'DE')                      4819.46       763.97       346.25       187.87      4631.60         0.00      2559.24     -3669.46          
+('natural_gas_turbine', 'IT')                      8886.94       763.97       346.25       262.99      6483.69         0.00      3582.63     -2552.59          
+('photovoltaics', 'CH')                             428.57       400.90       150.43         0.34         0.00         0.00         0.00      -123.09          
+('photovoltaics', 'DE')                             224.56       400.90       150.43         0.29         0.00         0.00         0.00      -327.05          
+('photovoltaics', 'IT')                             565.31       400.90       150.43         0.25         0.00         0.00         0.00        13.74          
+('reservoir_hydro', 'CH')                          2346.43      2526.96       745.77        45.85         0.00         0.00         0.00      -972.15          
+('reservoir_hydro', 'DE')                          6172.08      2526.96       745.77       138.21         0.00         0.00         0.00      2761.14          
+('reservoir_hydro', 'IT')                          4123.33      2526.96       745.77        65.53         0.00         0.00         0.00       785.07          
+('run-of-river_hydro', 'CH')                       2518.01      2905.96       702.06        57.37         0.00         0.00         0.00     -1147.39          
+('run-of-river_hydro', 'DE')                       5800.45      2905.96       702.06       172.97         0.00         0.00         0.00      2019.46          
+('run-of-river_hydro', 'IT')                       4305.27      2905.96       702.06        93.01         0.00         0.00         0.00       604.23          
+('wind_offshore', 'CH')                               0.00      2176.37       627.97         0.00         0.00         0.00         0.00      -360.69         *
+('wind_offshore', 'DE')                            2493.36      2176.37       627.97        49.70         0.00         0.00         0.00      -360.69          
+('wind_offshore', 'IT')                               0.00      2176.37       627.97         0.00         0.00         0.00         0.00      -360.69         *
+('wind_onshore', 'CH')                              636.54      1057.43       286.08         5.42         0.00         0.00         0.00      -712.40          
+('wind_onshore', 'DE')                             1545.84      1057.43       286.08        17.15         0.00         0.00         0.00       185.18          
+('wind_onshore', 'IT')                             1307.79      1057.43       286.08         9.00         0.00         0.00         0.00       -44.72          
+
+Saved profitability components (24 rows, decision year 2) to ..\Crystal-Ball-small\visualization\2026-06-08_16-46-34\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:57:02 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.060940
+             DE                     0.049136
+             IT                     0.057517
+heat         CH                     0.076444
+             DE                     0.060093
+             IT                     0.039993
+natural_gas  CH                     0.039793
+             DE                     0.039793
+             IT                     0.039793
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -966.93
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -966.93
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit   Changed
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                2107.65       930.13       258.32         0.00       984.84         0.00         0.00       -65.64          
+('heat_pump', 'DE')                                1726.58       930.13       258.32         0.00       603.77         0.00         0.00       -65.64          
+('heat_pump', 'IT')                                1349.13       930.13       258.32         0.00       737.93         0.00         0.00      -577.25          
+('natural_gas_boiler', 'CH')                       2235.98       487.19       233.65         0.00      1558.46         0.00       790.96      -834.27          
+('natural_gas_boiler', 'DE')                       1831.71       487.19       233.65         0.00      1477.62         0.00       749.93     -1116.68          
+('natural_gas_boiler', 'IT')                       1364.50       487.19       233.65         0.00      1364.50         0.00       692.52     -1413.36          
+('natural_gas_turbine', 'CH')                      6224.43       786.12       354.46       211.65      5531.68         0.00      2807.47     -3466.94          
+('natural_gas_turbine', 'DE')                      2631.04       786.12       354.46        97.28      2542.59         0.00      1290.43     -2439.85          
+('natural_gas_turbine', 'IT')                      2224.60       786.12       354.46        82.25      2149.81         0.00      1091.09     -2239.14          
+('photovoltaics', 'CH')                             381.42       543.60       187.44         0.43         0.00         0.00         0.00      -350.05          
+('photovoltaics', 'DE')                             175.48       543.60       187.44         0.37         0.00         0.00         0.00      -555.93          
+('photovoltaics', 'IT')                             479.83       543.60       187.44         0.51         0.00         0.00         0.00      -251.72          
+('reservoir_hydro', 'CH')                          2220.95      2527.34       745.86        70.15         0.00         0.00         0.00     -1122.40          
+('reservoir_hydro', 'DE')                          6054.86      2527.34       745.86       124.17         0.00         0.00         0.00      2657.49          
+('reservoir_hydro', 'IT')                          3568.29      2527.34       745.86       107.47         0.00         0.00         0.00       187.62          
+('run-of-river_hydro', 'CH')                       2319.17      2921.91       708.16        57.51         0.00         0.00         0.00     -1368.40          
+('run-of-river_hydro', 'DE')                       5551.14      2921.91       708.16       159.91         0.00         0.00         0.00      1761.16          
+('run-of-river_hydro', 'IT')                       3692.66      2921.91       708.16       136.96         0.00         0.00         0.00       -74.37          
+('wind_offshore', 'CH')                                nan          nan          nan          nan          nan          nan          nan      -966.93         *
+('wind_offshore', 'DE')                            2225.06      2397.26       738.31        56.41         0.00         0.00         0.00      -966.93          
+('wind_offshore', 'IT')                                nan          nan          nan          nan          nan          nan          nan      -966.93         *
+('wind_onshore', 'CH')                              548.59      1133.43       303.30         5.80         0.00         0.00         0.00      -893.94          
+('wind_onshore', 'DE')                             1374.51      1133.43       303.30        18.40         0.00         0.00         0.00       -80.61          
+('wind_onshore', 'IT')                             1053.41      1133.43       303.30        12.21         0.00         0.00         0.00      -395.53          
+
+Saved profitability components (24 rows, decision year 0) to D:\Students\ssambale_jwiegner\Crystal-Ball-small\visualization\2026-06-08_16-57-03\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:57:31 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.055436
+             DE                     0.046341
+             IT                     0.050722
+heat         CH                     0.074376
+             DE                     0.064507
+             IT                     0.079476
+natural_gas  CH                     0.031773
+             DE                     0.031773
+             IT                     0.031773
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -829.62
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -829.62
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit   Changed
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                1954.21       868.63       212.82         0.00       920.06         0.00         0.00       -47.31          
+('heat_pump', 'DE')                                1670.44       868.63       212.82         0.00       636.29         0.00         0.00       -47.31          
+('heat_pump', 'IT')                                1780.05       868.63       212.82         0.00       656.94         0.00         0.00        41.65          
+('natural_gas_boiler', 'CH')                       2073.19       485.11       232.98         0.00      1244.36         0.00       790.96      -680.22          
+('natural_gas_boiler', 'DE')                       1772.15       485.11       232.98         0.00      1179.81         0.00       749.93      -875.69          
+('natural_gas_boiler', 'IT')                       1888.43       485.11       232.98         0.00      1142.81         0.00       726.41      -698.89          
+('natural_gas_turbine', 'CH')                      5282.95       774.97       350.51       208.88      4416.79         0.00      2807.47     -3275.66          
+('natural_gas_turbine', 'DE')                      3126.17       774.97       350.51       140.45      2969.98         0.00      1887.83     -2997.56          
+('natural_gas_turbine', 'IT')                      3191.32       774.97       350.51       144.70      3059.76         0.00      1944.90     -3083.51          
+('photovoltaics', 'CH')                             580.91       459.66       167.13         0.38         0.00         0.00         0.00       -46.26          
+('photovoltaics', 'DE')                             194.80       459.66       167.13         0.32         0.00         0.00         0.00      -432.32          
+('photovoltaics', 'IT')                             646.85       459.66       167.13         0.45         0.00         0.00         0.00        19.61          
+('reservoir_hydro', 'CH')                          2049.73      2527.20       745.82        70.15         0.00         0.00         0.00     -1293.44          
+('reservoir_hydro', 'DE')                          5406.84      2527.20       745.82       124.17         0.00         0.00         0.00      2009.65          
+('reservoir_hydro', 'IT')                          3327.30      2527.20       745.82       107.46         0.00         0.00         0.00       -53.18          
+('run-of-river_hydro', 'CH')                       2115.33      2914.48       704.89        64.29         0.00         0.00         0.00     -1568.33          
+('run-of-river_hydro', 'DE')                       5073.90      2914.48       704.89       159.76         0.00         0.00         0.00      1294.77          
+('run-of-river_hydro', 'IT')                       3351.65      2914.48       704.89       119.76         0.00         0.00         0.00      -387.48          
+('wind_offshore', 'CH')                                nan          nan          nan          nan          nan          nan          nan      -829.62         *
+('wind_offshore', 'DE')                            2178.32      2280.72       675.20        52.01         0.00         0.00         0.00      -829.62          
+('wind_offshore', 'IT')                                nan          nan          nan          nan          nan          nan          nan      -829.62         *
+('wind_onshore', 'CH')                              501.85      1098.78       295.90         5.62         0.00         0.00         0.00      -898.45          
+('wind_onshore', 'DE')                             1350.48      1098.78       295.90        17.77         0.00         0.00         0.00       -61.97          
+('wind_onshore', 'IT')                              934.08      1098.78       295.90        11.82         0.00         0.00         0.00      -472.42          
+
+Saved profitability components (24 rows, decision year 1) to ..\Crystal-Ball-small\visualization\2026-06-08_16-57-03\profitability_components.csv
+
+=== Event 'after_optimization' getriggert am 2026-06-08 16:58:00 ===
+
+--- Calculating and printing discounted fixed OPEX ---
+
+--- Average shadow prices across time steps ---
+                        average_shadow_price
+set_carriers set_nodes                      
+electricity  CH                     0.069472
+             DE                     0.052961
+             IT                     0.068968
+heat         CH                     0.077220
+             DE                     0.066241
+             IT                     0.079984
+natural_gas  CH                     0.036550
+             DE                     0.036550
+             IT                     0.036550
+Profitability fill: (wind_offshore, CH) has 0 revenue → replaced with avg of revenue-positive peers = -360.69
+Profitability fill: (wind_offshore, IT) has 0 revenue → replaced with avg of revenue-positive peers = -360.69
+
+--- Profitability of Capacity Additions ---
+Tech / Node                                        Revenue        CAPEX   Fixed OPEX     Var OPEX   Input Cost     Tech CO2  Carrier CO2       Profit   Changed
+---------------------------------------------------------------------------------------------------------------------------------------------------------------
+('heat_pump', 'CH')                                2200.51       820.94       181.29         0.00      1145.27         0.00         0.00        53.01          
+('heat_pump', 'DE')                                1785.28       820.94       181.29         0.00       730.05         0.00         0.00        53.01          
+('heat_pump', 'IT')                                1961.32       820.94       181.29         0.00       928.58         0.00         0.00        30.51          
+('natural_gas_boiler', 'CH')                       2334.49       483.10       232.18         0.00      1431.44         0.00       790.96      -603.20          
+('natural_gas_boiler', 'DE')                       1893.98       483.10       232.18         0.00      1357.19         0.00       749.93      -928.43          
+('natural_gas_boiler', 'IT')                       2080.74       483.10       232.18         0.00      1314.63         0.00       726.41      -675.58          
+('natural_gas_turbine', 'CH')                      7489.01       763.97       346.25       206.09      5080.85         0.00      2807.47     -1715.62          
+('natural_gas_turbine', 'DE')                      4819.46       763.97       346.25       187.87      4631.60         0.00      2559.24     -3669.46          
+('natural_gas_turbine', 'IT')                      8886.94       763.97       346.25       262.99      6483.69         0.00      3582.63     -2552.59          
+('photovoltaics', 'CH')                             428.57       400.90       150.43         0.34         0.00         0.00         0.00      -123.09          
+('photovoltaics', 'DE')                             224.56       400.90       150.43         0.29         0.00         0.00         0.00      -327.05          
+('photovoltaics', 'IT')                             565.31       400.90       150.43         0.25         0.00         0.00         0.00        13.74          
+('reservoir_hydro', 'CH')                          2346.43      2526.96       745.77        45.85         0.00         0.00         0.00      -972.15          
+('reservoir_hydro', 'DE')                          6172.08      2526.96       745.77       138.21         0.00         0.00         0.00      2761.14          
+('reservoir_hydro', 'IT')                          4123.33      2526.96       745.77        65.53         0.00         0.00         0.00       785.07          
+('run-of-river_hydro', 'CH')                       2518.01      2905.96       702.06        57.37         0.00         0.00         0.00     -1147.39          
+('run-of-river_hydro', 'DE')                       5800.45      2905.96       702.06       172.97         0.00         0.00         0.00      2019.46          
+('run-of-river_hydro', 'IT')                       4305.27      2905.96       702.06        93.01         0.00         0.00         0.00       604.23          
+('wind_offshore', 'CH')                                nan          nan          nan          nan          nan          nan          nan      -360.69         *
+('wind_offshore', 'DE')                            2493.36      2176.37       627.97        49.70         0.00         0.00         0.00      -360.69          
+('wind_offshore', 'IT')                                nan          nan          nan          nan          nan          nan          nan      -360.69         *
+('wind_onshore', 'CH')                              636.54      1057.43       286.08         5.42         0.00         0.00         0.00      -712.40          
+('wind_onshore', 'DE')                             1545.84      1057.43       286.08        17.15         0.00         0.00         0.00       185.18          
+('wind_onshore', 'IT')                             1307.79      1057.43       286.08         9.00         0.00         0.00         0.00       -44.72          
+
+Saved profitability components (24 rows, decision year 2) to ..\Crystal-Ball-small\visualization\2026-06-08_16-57-03\profitability_components.csv

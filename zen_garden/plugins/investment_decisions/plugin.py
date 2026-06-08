@@ -69,11 +69,14 @@ def after_optimization_event(optimization_setup):
        
         extract_average_shadow_prices(optimization_setup)        
 
-        # publish profitability for use as bias in the next period's objective
-        # (consumed by before_solve_event -> apply_profitability_bias_objective).
-        optimization_setup.profitability = calculate_profitability(optimization_setup)
+        # compute once; reuse the result for the bias signal and the CSV export.
+        profitability_components = calculate_profitability(optimization_setup)
+
+        # publish profitability Series for use as bias in the next period's
+        # objective (consumed by before_solve_event -> apply_profitability_bias_objective).
+        optimization_setup.profitability = profitability_components["profitability"]
 
         # persist all profitability components of this step to a per-run CSV so
         # they can be reused later (e.g. by run_and_visualize) across all steps.
-        save_profitability_components(optimization_setup)
+        save_profitability_components(optimization_setup, components_df=profitability_components)
     visualization(optimization_setup)
