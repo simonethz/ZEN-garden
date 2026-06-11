@@ -439,6 +439,8 @@ def get_flow_input_carrier(optimization_setup) -> pd.Series:
     result.name = "specific_input_flow_per_gw"
     return result
 
+
+
 # revenue and cost calculations
 def calculate_revenue(optimization_setup) -> pd.Series:
     """Discounted lifetime revenue for a hypothetical capacity addition.
@@ -591,7 +593,6 @@ def get_capex(optimization_setup) -> pd.Series:
 
    
     return result
-
 
 def get_fixed_opex_discounted(optimization_setup) -> pd.Series:
     """Total fixed OPEX [MEUR] for the capacity additions  returned by
@@ -995,6 +996,363 @@ def get_carrier_co2_cost_discounted(optimization_setup) -> pd.Series:
 
     return result
 
+
+# subsidies
+# Subsidies are positive cash flows that improve the profitability of a capacity
+# addition. They are configured in the plugin config (``config["subsidies"]``) as
+# a list of entries, each with the keys ``technology``, ``node``, ``type`` and
+# ``amount`` (``remuneration`` entries additionally require ``carrier``). Four
+# subsidy types are supported:
+#   - ``capex``         : one-time relief in the decision year (NPV == annual).
+#   - ``fixed_opex``    : annual lump-sum relief, recurring over the lifetime and
+#                         discounted; scaled by the capacity addition.
+#   - ``variable_opex`` : a per-MWh relief [money/MWh] on the reference-carrier
+#                         flow (same logic as ``get_variable_opex_discounted``),
+#                         recurring over the lifetime and discounted.
+#   - ``remuneration``  : a fixed feed-in price [money/MWh] for the configured
+#                         output ``carrier`` that replaces the market shadow
+#                         price; the subsidy is the extra revenue
+#                         (price - shadow_price) * production, discounted.
+# Each function returns a DataFrame indexed by (set_conversion_technologies,
+# set_nodes) with columns ``npv`` (discounted to the decision year, used in
+# ``calculate_profitability``) and ``annual`` (undiscounted yearly value, written
+# to the profitability CSV).
+def _get_subsidies(optimization_setup, subsidy_type=None) -> list[dict]:
+    """Validated subsidy entries from the plugin config.
+
+    Reads ``config["subsidies"]`` from the investment_decisions plugin (lazy
+    import to avoid a circular import) and returns a list of normalized dicts
+    ``{technology, node, type, amount, carrier}`` (``carrier`` is ``None`` for
+    all but ``remuneration`` entries). Entries that are malformed or that
+    reference an unknown technology, node or subsidy type are dropped with a
+    warning; ``remuneration`` entries are also dropped unless ``carrier`` names
+    an output carrier of the technology. ``subsidy_type`` optionally restricts
+    the result to a single type.
+    """
+    try:
+        from zen_garden.plugins.investment_decisions.plugin import config
+    except Exception:
+        return []
+    raw = config.get("subsidies", []) or []
+
+    sets = optimization_setup.sets
+    techs = set(sets["set_conversion_technologies"])
+    nodes = set(sets["set_nodes"])
+    valid_types = {"capex", "fixed_opex", "variable_opex", "remuneration"}
+
+    out: list[dict] = []
+    for entry in raw:
+        try:
+            tech = entry["technology"]
+            node = entry["node"]
+            stype = entry["type"]
+            amount = float(entry["amount"])
+        except (KeyError, TypeError, ValueError):
+            logging.warning(f"Subsidy entry malformed, skipped: {entry!r}")
+            continue
+        if stype not in valid_types:
+            logging.warning(f"Subsidy of unknown type {stype!r}, skipped: {entry!r}")
+            continue
+        if tech not in techs:
+            logging.warning(
+                f"Subsidy references unknown technology {tech!r}, skipped: {entry!r}"
+            )
+            continue
+        if node not in nodes:
+            logging.warning(
+                f"Subsidy references unknown node {node!r}, skipped: {entry!r}"
+            )
+            continue
+
+        # remuneration applies to one configured output carrier of the tech.
+        carrier = entry.get("carrier")
+        if stype == "remuneration":
+            out_carriers = sets["set_output_carriers"][tech]  # tech already validated
+            if carrier is None:
+                logging.warning(
+                    f"Remuneration subsidy requires an output 'carrier', "
+                    f"skipped: {entry!r}"
+                )
+                continue
+            if carrier not in out_carriers:
+                logging.warning(
+                    f"Remuneration subsidy carrier {carrier!r} is not an output "
+                    f"carrier of {tech!r}, skipped: {entry!r}"
+                )
+                continue
+
+        if subsidy_type is not None and stype != subsidy_type:
+            continue
+        out.append(
+            {
+                "technology": tech,
+                "node": node,
+                "type": stype,
+                "amount": amount,
+                "carrier": carrier,
+            }
+        )
+    return out
+
+def _subsidy_frame(records: list[dict]) -> pd.DataFrame:
+    """Build the standard subsidy DataFrame from per-(tech, node) records.
+
+    Returns a DataFrame indexed by (set_conversion_technologies, set_nodes) with
+    columns ``npv`` and ``annual``. Multiple entries for the same (tech, node)
+    are summed. An empty record list yields an empty, correctly-typed frame.
+    """
+    cols = ["npv", "annual"]
+    if not records:
+        idx = pd.MultiIndex.from_arrays(
+            [[], []], names=["set_conversion_technologies", "set_nodes"]
+        )
+        return pd.DataFrame(0.0, index=idx, columns=cols)
+    df = pd.DataFrame(records)
+    # min_count=1 keeps an all-NaN group (e.g. the one-time CAPEX subsidy, which
+    # has no recurring annual value) as NaN instead of collapsing it to 0.
+    return df.groupby(["set_conversion_technologies", "set_nodes"])[cols].sum(
+        min_count=1
+    )
+
+def _peer_avg_production(spec_prod: pd.Series, tech: str, carrier: str):
+    """Average specific-production profile over peer nodes that produce.
+
+    Used to estimate the production at a configured subsidy node that currently
+    has no flow: returns the per-time-step mean of ``spec_prod`` across the nodes
+    of ``(tech, carrier)`` whose annual production is positive, or ``None`` when
+    no such peer node exists.
+    """
+    try:
+        sub = spec_prod.loc[(tech, carrier)]  # indexed by (set_nodes, time step)
+    except KeyError:
+        return None
+    node_sum = sub.groupby(level="set_nodes").sum()
+    flow_nodes = node_sum.index[node_sum > 0]
+    if len(flow_nodes) == 0:
+        return None
+    peer = sub[sub.index.get_level_values("set_nodes").isin(flow_nodes)]
+    return peer.groupby(level="set_time_steps_operation").mean()
+
+def get_capex_subsidy(optimization_setup) -> pd.DataFrame:
+    """CAPEX subsidy: a one-time relief in the decision year, scaled per GW.
+
+    For every ``capex`` subsidy entry the relief equals ``amount *
+    capacity_addition`` and is paid once in the decision year (no discounting,
+    mirroring the overnight CAPEX in ``get_capex``). As it is a one-time relief,
+    it has no recurring yearly value, so ``annual`` is ``NaN``.
+    """
+    entries = _get_subsidies(optimization_setup, "capex")
+    capacity_addition = _capacity_addition(optimization_setup)
+
+    records = []
+    for e in entries:
+        tech, node, amount = e["technology"], e["node"], e["amount"]
+        value = amount * float(capacity_addition.get(tech, 0.0))
+        records.append(
+            {
+                "set_conversion_technologies": tech,
+                "set_nodes": node,
+                "npv": value,
+                "annual": np.nan,
+            }
+        )
+    return _subsidy_frame(records)
+
+def get_fixed_opex_subsidy(optimization_setup) -> pd.DataFrame:
+    """Fixed-OPEX subsidy: an annual lump-sum relief, scaled per GW.
+
+    Each entry is an annual relief ``amount * capacity_addition`` that recurs
+    over the technology lifetime and is discounted to the decision year with the
+    same discount rate and investment delay as the OPEX cost components.
+    """
+    entries = _get_subsidies(optimization_setup, "fixed_opex")
+    discount_rate = get_discount_rate(optimization_setup)
+    lifetime = get_lifetime(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition = _capacity_addition(optimization_setup)
+
+    records = []
+    for e in entries:
+        tech, node, amount = e["technology"], e["node"], e["amount"]
+        if pd.isna(lifetime.get(tech, np.nan)):
+            continue
+        tech_lifetime = int(lifetime[tech])
+        delay = int(investment_delay[tech])
+        annual = amount * float(capacity_addition.get(tech, 0.0))
+        r = float(discount_rate.loc[(tech, node)])
+        npv = sum(
+            annual / (1 + r) ** offset
+            for offset in range(delay, tech_lifetime + delay)
+        )
+        records.append(
+            {
+                "set_conversion_technologies": tech,
+                "set_nodes": node,
+                "npv": npv,
+                "annual": annual,
+            }
+        )
+    return _subsidy_frame(records)
+
+def get_variable_opex_subsidy(optimization_setup) -> pd.DataFrame:
+    """Variable-OPEX subsidy: a per-MWh relief on the reference-carrier flow.
+
+    Mirrors ``get_variable_opex_discounted``: the ``amount`` [money/MWh] is
+    multiplied by the specific reference-carrier flow per GW (summed over the
+    base year) and the capacity addition, then discounted over the lifetime with
+    the same discount rate and investment delay as the OPEX cost components.
+
+    If a configured node has no reference-carrier flow, the flow is estimated by
+    the average flow over the nodes of the same technology that do have flow, so
+    a subsidy can still be assigned (mirroring the profitability peer-fill).
+    """
+    entries = _get_subsidies(optimization_setup, "variable_opex")
+    if not entries:
+        return _subsidy_frame([])
+
+    sets = optimization_setup.sets
+    time_steps = optimization_setup.energy_system.time_steps
+    op2year = pd.Series(time_steps.time_steps_operation2year)
+    op_level = "set_time_steps_operation"
+    base_year = max(sets["set_time_steps_yearly"])
+
+    # specific reference-carrier flow per GW [MWh/GW per time step], summed per year
+    ref_flow = get_flow_reference_carrier(optimization_setup)
+    if ref_flow.empty:
+        return _subsidy_frame([])
+    ref_flow = ref_flow.droplevel("reference_carrier")
+    ref_flow_df = ref_flow.rename("ref_flow").reset_index()
+    ref_flow_df["set_time_steps_yearly"] = ref_flow_df[op_level].map(op2year)
+    annual_ref_flow = (
+        ref_flow_df
+        .groupby(["set_technologies", "set_nodes", "set_time_steps_yearly"])["ref_flow"]
+        .sum()
+    )
+    # base-year flow per (tech, node), used both directly and for the peer average
+    base_flow = annual_ref_flow.xs(base_year, level="set_time_steps_yearly")
+
+    discount_rate = get_discount_rate(optimization_setup)
+    lifetime = get_lifetime(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition = _capacity_addition(optimization_setup)
+
+    records = []
+    for e in entries:
+        tech, node, amount = e["technology"], e["node"], e["amount"]
+        if pd.isna(lifetime.get(tech, np.nan)):
+            continue
+
+        flow_val = float(base_flow.get((tech, node), 0.0))
+        if not (flow_val > 0):
+            # node has no reference-carrier flow -> estimate it with the average
+            # flow over the nodes of the same tech that do have flow.
+            tech_flows = (
+                base_flow.loc[tech]
+                if tech in base_flow.index.get_level_values("set_technologies")
+                else pd.Series(dtype=float)
+            )
+            peers = tech_flows[tech_flows > 0]
+            if len(peers) == 0:
+                continue
+            flow_val = float(peers.mean())
+
+        annual = amount * flow_val * float(capacity_addition.get(tech, 0.0))
+        tech_lifetime = int(lifetime[tech])
+        delay = int(investment_delay[tech])
+        r = float(discount_rate.loc[(tech, node)])
+        npv = sum(
+            annual / (1 + r) ** offset
+            for offset in range(delay, tech_lifetime + delay)
+        )
+        records.append(
+            {
+                "set_conversion_technologies": tech,
+                "set_nodes": node,
+                "npv": npv,
+                "annual": annual,
+            }
+        )
+    return _subsidy_frame(records)
+
+def get_remuneration_subsidy(optimization_setup) -> pd.DataFrame:
+    """Remuneration subsidy: a fixed feed-in price replacing the shadow price.
+
+    For every ``remuneration`` entry the ``amount`` is a fixed price
+    [money/MWh] guaranteed for the technology's production of the configured
+    output ``carrier`` at the node. The subsidy is the extra revenue over the
+    market shadow price::
+
+        annual = capacity_addition
+                 * Σ_t specific_production[tech, carrier, node, t]
+                   * (amount - shadow_price[carrier, node, t])
+
+    for the single configured output carrier. The annual value is discounted
+    over the lifetime exactly like ``calculate_revenue``.
+
+    If a configured node has no production of the carrier, the production profile
+    is estimated by the average over the peer nodes (same tech & carrier) that do
+    produce; the market shadow price always stays node-specific.
+    """
+    entries = _get_subsidies(optimization_setup, "remuneration")
+    if not entries:
+        return _subsidy_frame([])
+
+    spec_prod = get_specific_production(optimization_setup)
+    prices = get_shadow_price(optimization_setup)
+    discount_rate = get_discount_rate(optimization_setup)
+    lifetime = get_lifetime(optimization_setup)
+    investment_delay = _get_investment_delay(optimization_setup)
+    capacity_addition = _capacity_addition(optimization_setup)
+
+    records = []
+    for e in entries:
+        tech, node, price, carrier = (
+            e["technology"], e["node"], e["amount"], e["carrier"]
+        )
+        if pd.isna(lifetime.get(tech, np.nan)):
+            continue
+
+        key = (tech, carrier, node)
+        # specific production profile at the node; if the node does not produce
+        # this carrier, fall back to the average profile over peer nodes that do.
+        try:
+            own = spec_prod.loc[key]
+        except KeyError:
+            own = None
+        if own is not None and float(own.sum()) > 0:
+            production = own
+        else:
+            production = _peer_avg_production(spec_prod, tech, carrier)
+            if production is None:
+                # no peer node produces this carrier -> cannot estimate
+                continue
+
+        try:
+            market_price = prices.loc[key]
+        except KeyError:
+            market_price = pd.Series(0.0, index=production.index)
+        diff = (price - market_price).reindex(production.index).fillna(price)
+        annual = float((production * diff).sum()) * float(
+            capacity_addition.get(tech, 0.0)
+        )
+        tech_lifetime = int(lifetime[tech])
+        delay = int(investment_delay[tech])
+        r = float(discount_rate.loc[(tech, node)])
+        npv = sum(
+            annual / (1 + r) ** offset
+            for offset in range(delay, tech_lifetime + delay)
+        )
+        records.append(
+            {
+                "set_conversion_technologies": tech,
+                "set_nodes": node,
+                "npv": npv,
+                "annual": annual,
+            }
+        )
+    return _subsidy_frame(records)
+
+
 # profitability calculation
 def calculate_profitability(optimization_setup) -> pd.DataFrame:
     """Calculate profitability of the capacity addition as revenue minus costs.
@@ -1004,16 +1362,28 @@ def calculate_profitability(optimization_setup) -> pd.DataFrame:
     investment delay and discounting principles are applied as in the
     revenue and cost calculations.
 
-    Zero-revenue (tech, node) pairs have their profitability replaced by the
-    average profitability of revenue-positive nodes of the same technology (if
-    any exist); such entries are flagged in the ``values_changed`` column.
+    Configured subsidies (see the ``subsidies`` section) enter as additional
+    positive components: their discounted NPV is added to the profitability and
+    surfaced both as ``<type>_subsidy`` (NPV) and ``<type>_subsidy_annual``
+    (undiscounted yearly value) columns.
+
+    Zero-revenue (tech, node) pairs have their RAW profitability (before
+    subsidies) replaced by the average raw profitability of revenue-positive
+    nodes of the same technology (if any exist); the subsidies are added
+    afterwards, so a filled node still keeps its own node-specific subsidy. Such
+    entries are flagged in the ``values_changed`` column and their cost/revenue
+    components (but not the subsidy components) are set to ``NaN``.
 
     Returns:
         ``pd.DataFrame`` indexed by (``set_conversion_technologies``,
         ``set_nodes``) with columns ``revenue``, ``capex``, ``fixed_opex``,
         ``variable_opex``, ``input_carrier_cost``, ``tech_co2_cost``,
-        ``carrier_co2_cost``, ``profitability``, and ``values_changed``
-        (bool, True when the profitability was filled from peer nodes).
+        ``carrier_co2_cost``, the subsidy columns ``capex_subsidy``,
+        ``fixed_opex_subsidy``, ``variable_opex_subsidy``,
+        ``remuneration_subsidy`` (each with a ``_annual`` counterpart),
+        ``profitability_raw`` (revenue minus costs, before subsidies),
+        ``profitability`` (including subsidies), and ``values_changed`` (bool,
+        True when the raw profitability was filled from peer nodes).
     """
     revenue = calculate_revenue(optimization_setup)
     capex = get_capex(optimization_setup)
@@ -1022,6 +1392,15 @@ def calculate_profitability(optimization_setup) -> pd.DataFrame:
     input_carrier_cost = calculate_input_carrier_cost(optimization_setup)
     tech_co2_cost = get_tech_co2_cost_discounted(optimization_setup)
     carrier_co2_cost = get_carrier_co2_cost_discounted(optimization_setup)
+
+    # subsidies (positive cash flows): each frame carries a discounted ``npv``
+    # (added to the profitability) and an undiscounted ``annual`` value (CSV).
+    subsidy_frames = {
+        "capex_subsidy": get_capex_subsidy(optimization_setup),
+        "fixed_opex_subsidy": get_fixed_opex_subsidy(optimization_setup),
+        "variable_opex_subsidy": get_variable_opex_subsidy(optimization_setup),
+        "remuneration_subsidy": get_remuneration_subsidy(optimization_setup),
+    }
 
     # revenue and input_carrier_cost are indexed by (set_technologies, *_carriers, set_nodes);
     # sum over carriers and rename to match the (set_conversion_technologies, set_nodes) index.
@@ -1047,9 +1426,12 @@ def calculate_profitability(optimization_setup) -> pd.DataFrame:
 
     values_changed = pd.Series(False, index=profitability.index, name="values_changed")
 
-    # For (tech, node) pairs with 0 revenue, replace profitability with the
-    # average profitability of revenue-positive nodes of the same technology.
-    # If no such peers exist, the value is left unchanged.
+    # For (tech, node) pairs with 0 revenue, replace the RAW profitability (before
+    # subsidies) with the average raw profitability of revenue-positive nodes of
+    # the same technology. Filling happens before the subsidies are added, so only
+    # the subsidy-free base is averaged; each filled node still receives its own
+    # (flow-estimated) subsidy on top afterwards. If no peers exist, the value is
+    # left unchanged.
     zero_rev_pairs = [
         idx for idx in profitability.index
         if revenue_by_tech_node.get(idx, 0.0) == 0.0
@@ -1069,8 +1451,21 @@ def calculate_profitability(optimization_setup) -> pd.DataFrame:
             values_changed.loc[idx] = True
             print(
                 f"Profitability fill: ({tech}, {node}) has 0 revenue → "
-                f"replaced with avg of revenue-positive peers = {fill_val:.2f}"
+                f"raw profitability replaced with avg of revenue-positive peers "
+                f"= {fill_val:.2f}"
             )
+
+    # raw profitability (revenue minus costs, after the peer-fill) before any
+    # subsidies are added, surfaced as its own component for transparency.
+    raw_profitability = profitability.copy()
+    raw_profitability.name = "profitability_raw"
+
+    # add the discounted subsidy NPVs (positive contributions) on top of the
+    # possibly peer-filled raw profitability. Subsidy pairs are a subset of the
+    # cost/revenue index, so the index is not extended.
+    for frame in subsidy_frames.values():
+        profitability = profitability.add(frame["npv"], fill_value=0)
+    profitability.name = "profitability"
 
     components = pd.DataFrame(
         {
@@ -1081,32 +1476,60 @@ def calculate_profitability(optimization_setup) -> pd.DataFrame:
             "input_carrier_cost": input_carrier_cost_by_tech_node,
             "tech_co2_cost": tech_co2_cost,
             "carrier_co2_cost": carrier_co2_cost_by_tech_node,
-            "profitability": profitability,
         }
     ).fillna(0.0)
+
+    # subsidies as separate positive components: discounted ``npv`` (already part
+    # of the profitability above) and the undiscounted ``annual`` value (CSV only).
+    for name, frame in subsidy_frames.items():
+        components[name] = frame["npv"].reindex(components.index, fill_value=0.0)
+        components[f"{name}_annual"] = frame["annual"].reindex(
+            components.index, fill_value=0.0
+        )
+
+    components["profitability_raw"] = raw_profitability.reindex(components.index)
+    components["profitability"] = profitability.reindex(components.index)
     components["values_changed"] = values_changed.reindex(components.index, fill_value=False)
 
-    # For manually filled entries all cost/revenue components are meaningless
-    # (they came from a different node), so set them to NaN.
+    # For manually filled entries the cost/revenue components are meaningless
+    # (they came from a different node), so set them to NaN. The subsidy columns
+    # are kept: they are estimated node-specifically (via peer-averaged flow) and
+    # were added on top of the peer-averaged raw profitability.
     component_cols = [
         "revenue", "capex", "fixed_opex", "variable_opex",
         "input_carrier_cost", "tech_co2_cost", "carrier_co2_cost",
     ]
     components.loc[components["values_changed"], component_cols] = np.nan
 
-    print(
-        f"\n--- Profitability of Capacity Additions ---\n"
+    # one column per subsidy type (raw profitability sits after all costs and
+    # before the subsidies, which then add up to the final profitability).
+    subsidy_cols = list(subsidy_frames)
+    subsidy_labels = {
+        "capex_subsidy": "Capex Sub",
+        "fixed_opex_subsidy": "FixOpx Sub",
+        "variable_opex_subsidy": "VarOpx Sub",
+        "remuneration_subsidy": "Remun Sub",
+    }
+    header = (
         f"{'Tech / Node':<45} {'Revenue':>12} {'CAPEX':>12} "
         f"{'Fixed OPEX':>12} {'Var OPEX':>12} {'Input Cost':>12} "
-        f"{'Tech CO2':>12} {'Carrier CO2':>12} {'Profit':>12} {'Changed':>9}\n"
-        + "-" * 159
+        f"{'Tech CO2':>12} {'Carrier CO2':>12} {'Raw Profit':>12} "
+        + "".join(f"{subsidy_labels.get(c, c):>12} " for c in subsidy_cols)
+        + f"{'Profit':>12} {'Changed':>9}"
+    )
+    print(
+        f"\n--- Profitability of Capacity Additions ---\n"
+        + header + "\n"
+        + "-" * len(header)
     )
     for idx, row in components.iterrows():
         print(
             f"{str(idx):<45} {row['revenue']:>12.2f} {row['capex']:>12.2f} "
             f"{row['fixed_opex']:>12.2f} {row['variable_opex']:>12.2f} "
             f"{row['input_carrier_cost']:>12.2f} {row['tech_co2_cost']:>12.2f} "
-            f"{row['carrier_co2_cost']:>12.2f} {row['profitability']:>12.2f} "
+            f"{row['carrier_co2_cost']:>12.2f} {row['profitability_raw']:>12.2f} "
+            + "".join(f"{row[c]:>12.2f} " for c in subsidy_cols)
+            + f"{row['profitability']:>12.2f} "
             f"{'*' if row['values_changed'] else '':>9}"
         )
     print()
@@ -1231,7 +1654,40 @@ def get_npc_capex_coefficient(optimization_setup) -> pd.Series:
 
     return result
 
-def get_min_coefficient_profitability_ratio(optimization_setup) -> float:
+def _get_bias_technologies(optimization_setup, output_carriers=None) -> set:
+    """Conversion technologies eligible for the profitability bias.
+
+    A technology qualifies when at least one of its output carriers is
+    contained in ``output_carriers``. ``None`` or an empty value selects all
+    conversion technologies (default behavior). A single carrier may be passed
+    as a plain string.
+
+    Returns:
+        ``set`` of technology names. Empty (with a warning) when no conversion
+        technology produces any of the configured carriers.
+    """
+    sets = optimization_setup.sets
+    techs = list(sets["set_conversion_technologies"])
+    if not output_carriers:
+        return set(techs)
+    if isinstance(output_carriers, str):
+        output_carriers = [output_carriers]
+    carriers = set(output_carriers)
+    output_carriers_by_tech = sets["set_output_carriers"]
+    selected = {
+        tech for tech in techs
+        if carriers.intersection(output_carriers_by_tech[tech])
+    }
+    if not selected:
+        logging.warning(
+            "Profitability bias: no conversion technology produces any of the "
+            f"configured output carriers {sorted(carriers)}; bias has no effect."
+        )
+    return selected
+
+def get_min_coefficient_profitability_ratio(
+    optimization_setup, output_carriers=None, coefficient=None
+) -> float:
     """Minimal ratio of NPC CAPEX coefficient to profitability over all
     (conversion technology, node) pairs.
 
@@ -1241,12 +1697,24 @@ def get_min_coefficient_profitability_ratio(optimization_setup) -> float:
 
     aligning both series on their shared index, and returns the smallest finite
     ratio over the **profitable** pairs only (profitability > 0). Pairs whose
-    coefficient is ``NaN`` (PWA technologies) or whose profitability is not
-    strictly positive are excluded.
+    coefficient is ``NaN`` (PWA technologies) or **zero** (pass-through
+    technologies without CAPEX, e.g. ``oil_to_diesel_conversion``) or whose
+    profitability is not strictly positive are excluded: a zero coefficient
+    would yield a ratio of 0 and thereby cancel the entire bias term.
+
+    When ``output_carriers`` is given, only technologies producing at least one
+    of these carriers are considered (see ``_get_bias_technologies``); ``None``
+    keeps all conversion technologies.
 
     The profitability is read from ``optimization_setup.profitability`` (set by
     ``after_optimization_event`` after each solve). When the attribute is absent
     (e.g. the first rolling-horizon step), ``NaN`` is returned.
+
+    Args:
+        optimization_setup: the optimization setup of the current step.
+        output_carriers: optional carrier restriction (see above).
+        coefficient: pre-computed result of ``get_npc_capex_coefficient``; when
+            provided the function is not called again.
 
     Returns:
         ``float`` minimal ratio, or ``NaN`` if no profitable pair remains.
@@ -1257,7 +1725,17 @@ def get_min_coefficient_profitability_ratio(optimization_setup) -> float:
         print("\n--- Coefficient / profitability ratio: no profitability signal yet ---\n")
         return float("nan")
 
-    coefficient = get_npc_capex_coefficient(optimization_setup)
+    if coefficient is None:
+        coefficient = get_npc_capex_coefficient(optimization_setup)
+    # exclude zero-CAPEX (pass-through) technologies: their ratio of 0 would
+    # collapse the bias term to plain net present cost for every bias weight
+    coefficient = coefficient[coefficient != 0]
+
+    # restrict to technologies with a configured output carrier
+    bias_techs = _get_bias_technologies(optimization_setup, output_carriers)
+    profitability = profitability[
+        profitability.index.get_level_values("set_conversion_technologies").isin(bias_techs)
+    ]
 
     # restrict to profitable pairs only
     profitability = profitability[profitability > 0]
@@ -1280,7 +1758,7 @@ def get_min_coefficient_profitability_ratio(optimization_setup) -> float:
     )
     for idx, val in ratio.sort_values().items():
         marker = "  <- min" if idx == min_idx else ""
-        print(f"{str(idx):<45} {val:>12.4f}{marker}")
+        print(f"{str(idx):<45} {val:>12.4e}{marker}")
     print()
 
     return min_val
@@ -1289,7 +1767,9 @@ def get_min_coefficient_profitability_ratio(optimization_setup) -> float:
 
 
 # objective modification
-def apply_profitability_bias_objective(optimization_setup, weight: float = 0.5) -> None:
+def apply_profitability_bias_objective(
+    optimization_setup, weight: float = 0.5, output_carriers=None
+) -> None:
     """Replace the model objective with total NPC penalized by a profitability bias.
 
     Modifies the already-constructed objective in place using the
@@ -1307,25 +1787,64 @@ def apply_profitability_bias_objective(optimization_setup, weight: float = 0.5) 
 
     ``\\rho_{\\min}`` is the minimal CAPEX-coefficient / profitability ratio over
     the profitable (tech, node) pairs, from
-    ``get_min_coefficient_profitability_ratio``. If it is not finite (no
-    profitable pair), the bias term is dropped and the objective collapses to the
-    plain total net present cost.
+    ``get_min_coefficient_profitability_ratio``. If it is not finite or not
+    strictly positive (no profitable pair with a positive CAPEX coefficient),
+    the bias term is dropped and the objective collapses to the plain total net
+    present cost.
+
+    Technologies with a CAPEX coefficient of exactly 0 (pass-through
+    converters) receive no bias: they are excluded from ``\\rho_{\\min}`` and
+    their bias coefficient is set to 0, since a bias on a technology without
+    capital cost would subsidize otherwise free capacity additions.
+
+    When ``output_carriers`` is given, the bias is restricted to technologies
+    producing at least one of these carriers: every other technology receives a
+    coefficient of 0 and ``\\rho_{\\min}`` is likewise computed over the
+    eligible technologies only. ``None`` (default) applies the bias to all
+    conversion technologies.
 
     Args:
         optimization_setup: The optimization setup holding the constructed model.
         weight: Bias weight ``w`` applied to the profitability term.
+        output_carriers: Optional list of output carrier names (or a single
+            name) limiting which technologies are biased.
     """
     profit = getattr(optimization_setup, "profitability", None)
     if profit is None:
         # no profitability signal yet -> keep the base total-cost objective
         return
 
-    ratio_min = get_min_coefficient_profitability_ratio(optimization_setup)
-    if not np.isfinite(ratio_min):
-        # no profitable (tech, node) pair -> keep the base total-cost objective
+    # zero the coefficient of technologies without a configured output carrier
+    bias_techs = _get_bias_technologies(optimization_setup, output_carriers)
+    profit = profit.where(
+        profit.index.get_level_values("set_conversion_technologies").isin(bias_techs),
+        0.0,
+    )
+
+    # zero the coefficient of (tech, node) pairs without CAPEX (pass-through
+    # converters such as oil_to_diesel_conversion): biasing them would
+    # subsidize capacity additions that cost nothing
+    capex_coefficient = get_npc_capex_coefficient(optimization_setup)
+    zero_capex = capex_coefficient.index[capex_coefficient == 0]
+    if len(zero_capex) > 0:
+        profit = profit.where(~profit.index.isin(zero_capex), 0.0)
+        print(
+            f"Profitability bias: excluded {len(zero_capex)} (tech, node) pairs "
+            f"with zero CAPEX coefficient from the bias "
+            f"({sorted(set(zero_capex.get_level_values(0)))})"
+        )
+
+    ratio_min = get_min_coefficient_profitability_ratio(
+        optimization_setup, output_carriers=output_carriers,
+        coefficient=capex_coefficient,
+    )
+    if not np.isfinite(ratio_min) or ratio_min <= 0:
+        # no profitable (tech, node) pair with positive CAPEX coefficient
+        # -> keep the base total-cost objective
         logging.warning(
             "apply_profitability_bias_objective: minimal coefficient/profitability "
-            "ratio is not finite; keeping plain net present cost objective."
+            f"ratio ({ratio_min}) is not finite and positive; keeping plain net "
+            "present cost objective."
         )
         return
 
@@ -1348,15 +1867,23 @@ def apply_profitability_bias_objective(optimization_setup, weight: float = 0.5) 
             fill_value=0.0,
         )
     )
+    coef_series = coef.to_series()
+    print(
+        f"\n--- Profitability bias coefficients "
+        f"(ratio_min={ratio_min:.4e}, weight={weight}) ---\n"
+        f"{'Tech / Node':<45} {'Coef':>14} {'Effective':>14}\n"
+        + "-" * 75
+    )
+    for idx, val in coef_series.items():
+        print(f"{str(idx):<45} {val:>14.4f} {ratio_min * weight * val:>14.4e}")
+    print()
+
     objective = base - ratio_min * (weight * coef * cap_add).sum()
 
     optimization_setup.model.remove_objective()
     optimization_setup.model.add_objective(
         objective, sense=optimization_setup.analysis.sense
     )
-
-
-
 
 
 

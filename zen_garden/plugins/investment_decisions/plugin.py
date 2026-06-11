@@ -53,12 +53,21 @@ def before_solve_event(optimization_setup):
     Only active when ``profitability_bias_enabled`` is set in the plugin config
     (analogous to ``bias_weight``). On the first rolling-horizon step (no
     profitability available yet) the objective is left untouched.
+
+    ``bias_output_carriers`` (optional, list of carrier names) restricts the
+    bias to technologies producing at least one of these carriers; all other
+    technologies receive a coefficient of 0. When absent or empty, all
+    conversion technologies are biased.
     """
-    if not config.get("profitability_bias_enabled", False):
-        return
-    apply_profitability_bias_objective(
-        optimization_setup, weight=config.get("bias_weight", 0.5)
-    )
+    with log_block(r"D:\Students\ssambale_jwiegner\ZEN-garden\investment_plugin_output.txt"):
+        print("\n--- Applying profitability bias to objective ---")
+        if not config.get("profitability_bias_enabled", False):
+            return
+        apply_profitability_bias_objective(
+            optimization_setup,
+            weight=config.get("bias_weight", 0.5),
+            output_carriers=config.get("bias_output_carriers", []),
+        )
 
 
 @EventPublisher.register(Event.event_after_optimization)

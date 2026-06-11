@@ -6,7 +6,7 @@ import pandas as pd
 
 from zen_garden import Results, run
 
-DATASET = 5 #0 for Crystal-Ball-small remote, 1 for Crystal-Ball full remote, 2 for Crystal-Ball-small local, 3 for Climate resilience remote, 4 for Crystal-Ball reduced remote
+DATASET = 0 #0 for Crystal-Ball-small remote, 1 for Crystal-Ball full remote, 2 for Crystal-Ball-small local, 3 for Climate resilience remote, 4 for Crystal-Ball reduced remote
 
 
 def get_dataset_root() -> Path:
@@ -63,22 +63,40 @@ DUAL_NAME = "constraint_nodal_energy_balance"
 
 
 
-def run_dataset():
-    """Run ZEN-garden."""
-    run(config=str(CONFIG_PATH), dataset=str(DATASET_PATH))
+def run_dataset(config_path: Path | None = None, folder_output: Path | None = None):
+    """Run ZEN-garden.
+
+    Args:
+        config_path: config file to use; defaults to the dataset's ``config.json``.
+        folder_output: output folder for this run; defaults to the location
+            configured in the config file (``outputs``).
+    """
+    run(
+        config=str(config_path or CONFIG_PATH),
+        dataset=str(DATASET_PATH),
+        folder_output=str(folder_output) if folder_output is not None else None,
+    )
 
 
-def visualize_capacity_additions():
+def visualize_capacity_additions(
+    output_path: Path | None = None,
+    plot_name: str = "capacity_additions.png",
+):
     """Stacked bar chart of capacity additions per (node, year), stacked by tech.
 
     One bar per (node, year); years for the same node sit next to each other.
-    Saved to ``<dataset_root_parent>/visualization/capacity_additions.png``.
+    Saved to ``<dataset_root_parent>/visualization/<plot_name>``.
+
+    Args:
+        output_path: results folder to read; defaults to ``OUTPUT_PATH``.
+        plot_name: file name of the saved chart; override per variation so
+            sweep runs do not overwrite each other.
     """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    results = Results(path=str(OUTPUT_PATH))
+    results = Results(path=str(output_path or OUTPUT_PATH))
     df = results.get_df("capacity_addition")
     if df is None or len(df) == 0:
         print("No capacity_addition data available.")
@@ -155,7 +173,7 @@ def visualize_capacity_additions():
 
     out_dir = DATASET_ROOT.parent / "visualization"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / "capacity_additions.png"
+    out_path = out_dir / plot_name
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -163,7 +181,10 @@ def visualize_capacity_additions():
 
 
 
-def record_run_summary(csv_name: str = "run_summary.csv") -> None:
+def record_run_summary(
+    csv_name: str = "run_summary.csv",
+    output_path: Path | None = None,
+) -> None:
     """Append a one-line snapshot of the current run to a shared CSV.
 
     Columns (header only in row 1):
@@ -176,11 +197,15 @@ def record_run_summary(csv_name: str = "run_summary.csv") -> None:
 
     Location: same as `visualize_capacity_additions` (DATASET_ROOT.parent /
     "visualization"), so columns across runs of the same dataset are aligned.
+
+    Args:
+        csv_name: file name of the shared summary CSV.
+        output_path: results folder to read; defaults to ``OUTPUT_PATH``.
     """
     from datetime import datetime
     import csv
 
-    results = Results(path=str(OUTPUT_PATH))
+    results = Results(path=str(output_path or OUTPUT_PATH))
     row: dict[str, float | str] = {
         "run_timestamp": datetime.now().isoformat(timespec="seconds"),
     }
@@ -195,11 +220,17 @@ def record_run_summary(csv_name: str = "run_summary.csv") -> None:
         plugin_config = {}
     bias_enabled = bool(plugin_config.get("profitability_bias_enabled", False))
     bias_weight = plugin_config.get("bias_weight", 0.5)
-    row["optimization"] = (
-        f"profitability_bias (bias_weight={bias_weight})"
-        if bias_enabled
-        else "total_cost"
-    )
+    if bias_enabled:
+        label = f"profitability_bias (bias_weight={bias_weight}"
+        bias_carriers = plugin_config.get("bias_output_carriers")
+        if bias_carriers:
+            if isinstance(bias_carriers, str):
+                bias_carriers = [bias_carriers]
+            label += f", output_carriers={'/'.join(bias_carriers)}"
+        label += ")"
+        row["optimization"] = label
+    else:
+        row["optimization"] = "total_cost"
 
     # --- total cost ---
     npc = results.get_total("net_present_cost")
@@ -400,8 +431,89 @@ def visualize_profitability_over_years(csv_path: str | Path | None = None) -> No
         print(f"Saved profitability-over-years plot to {out_path}")
 
 
+# restrict the profitability bias (and thereby the ratio_min normalization) to
+# technologies producing at least one of these carriers; note that the
+# district-heating techs (*_DH) output "district_heat", not "heat"
+BIAS_OUTPUT_CARRIERS: list[str] = []
+
+
+def create_variation_configs(bias_weights) -> list[tuple[str, Path]]:
+    """Write one config file per bias weight next to the base ``config.json``.
+
+    Copies the dataset's ``config.json`` and overwrites the
+    ``investment_decisions`` plugin entry: a ``None`` weight creates a baseline
+    config with the profitability bias disabled, a numeric weight enables the
+    bias with that ``bias_weight`` and restricts it to the output carriers in
+    ``BIAS_OUTPUT_CARRIERS``. The variants are written as
+    ``config_<label>.json`` into ``DATASET_ROOT`` (same directory as the base
+    config, so relative paths inside the config resolve identically).
+
+    Args:
+        bias_weights: iterable of weights, e.g. ``[None, 0.25, 0.5, 1.0]``.
+
+    Returns:
+        list of ``(label, config_path)`` tuples in input order.
+    """
+    import copy
+    import json
+
+    with open(CONFIG_PATH) as f:
+        base_config = json.load(f)
+
+    variations: list[tuple[str, Path]] = []
+    for weight in bias_weights:
+        label = "no_bias" if weight is None else f"bias_weight_{weight}"
+        cfg = copy.deepcopy(base_config)
+        plugin_cfg = cfg.setdefault("plugins", {}).setdefault(
+            "investment_decisions", {}
+        )
+        if weight is None:
+            plugin_cfg["profitability_bias_enabled"] = False
+        else:
+            plugin_cfg["profitability_bias_enabled"] = True
+            plugin_cfg["bias_weight"] = weight
+            plugin_cfg["bias_output_carriers"] = list(BIAS_OUTPUT_CARRIERS)
+
+        config_path = DATASET_ROOT / f"config_{label}.json"
+        with open(config_path, "w") as f:
+            json.dump(cfg, f, indent=4)
+        variations.append((label, config_path))
+        print(f"Created variation config: {config_path}")
+    return variations
+
+
+# bias weights to run in one program start; ``None`` = baseline without bias
+#BIAS_WEIGHTS: list[float | None] = [None, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 5.0, 10.0, 50, 100] 
+#BIAS_WEIGHTS: list[float | None] = [None, 0.1, 0.3, 0.5]
+BIAS_WEIGHTS: list[float | None] = [0.3]
+
+
+
 if __name__ == "__main__":
-    run_dataset()
-    visualize_capacity_additions()
-    record_run_summary()
-    visualize_profitability_over_years()
+    from datetime import datetime
+
+    from zen_garden.plugins.investment_decisions import investment_decisions
+
+    time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    sweep_root = DATASET_ROOT / "outputs" / f"bias_sweep_{time_str}"
+
+    for label, config_file in create_variation_configs(BIAS_WEIGHTS):
+        print(f"\n================ Variation: {label} ================\n")
+        result_folder = sweep_root / label
+        # pre-create the nested folder: ZEN-garden's setup_output_folder uses
+        # plain os.mkdir, which cannot create more than one level at once
+        result_folder.mkdir(parents=True, exist_ok=True)
+
+        # new timestamped visualization folder per variation, so the
+        # profitability CSVs/plots of the variations do not mix
+        investment_decisions._RUN_TIMESTAMP = None
+
+        run_dataset(config_file, result_folder)
+
+        # results of this variation live in <result_folder>/<model_name>
+        output_path = result_folder / DATASET_PATH.name
+        visualize_capacity_additions(
+            output_path, plot_name=f"capacity_additions_{label}.png"
+        )
+        record_run_summary(output_path=output_path)
+        visualize_profitability_over_years()
