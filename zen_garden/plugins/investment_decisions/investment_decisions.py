@@ -1898,13 +1898,18 @@ def save_profitability_components(
     Calls ``calculate_profitability`` to obtain every component (revenue, CAPEX,
     fixed/variable OPEX, input-carrier cost, CO2 costs, net profitability, and
     the ``values_changed`` flag) and appends them — tagged with the decision year
-    and carrier metadata — to ``profitability_components.csv`` in the timestamped
-    per-run folder.
+    and carrier metadata — to a per-run CSV written directly into the dataset's
+    ``visualization`` folder (one level above the timestamped per-run folder).
+    The file is named
+    ``<timestamp>_profitability_<rolling_horizon|perfect_foresight>[_<bias>][_<subsidy>].csv``;
+    under perfect foresight the bias and subsidy tags are dropped, and the
+    subsidy tag (e.g. ``hp_capex_DE``, mirroring the capacity-additions plot) is
+    only present when a subsidy is configured.
 
     Args:
         optimization_setup: solved optimization setup of the current step.
-        output_dir: root visualization directory; defaults to the dataset's
-            ``visualization`` folder derived from ``analysis.dataset``.
+        output_dir: visualization directory the CSV is written into; defaults to
+            the dataset's ``visualization`` folder derived from ``analysis.dataset``.
         components_df: pre-computed result of ``calculate_profitability``; when
             provided the function is not called again, avoiding double computation.
 
@@ -1945,15 +1950,50 @@ def save_profitability_components(
     )
     df.insert(0, "decision_year", year)
 
+    from pathlib import Path
+
+    # descriptive file name:
+    #   <timestamp>_profitability_<rolling_horizon|perfect_foresight>[_<bias>][_<subsidy>].csv
+    # Under perfect foresight the bias and subsidy tags are omitted; under
+    # rolling horizon the bias tag is always present (bias_<weight> or no_bias)
+    # and the subsidy tag (e.g. ``hp_capex_DE``) only when a subsidy is
+    # configured.
+    timestamp = _get_run_timestamp()
+    rolling = bool(getattr(optimization_setup.system, "use_rolling_horizon", False))
+    mode = "rolling_horizon" if rolling else "perfect_foresight"
+
+    try:
+        from zen_garden.plugins.investment_decisions.plugin import config
+    except Exception:
+        config = {}
+
+    name_parts = [timestamp, "profitability", mode]
+    if rolling:
+        if config.get("profitability_bias_enabled", False):
+            name_parts.append(f"bias_{config.get('bias_weight', 0.5)}")
+        else:
+            name_parts.append("no_bias")
+        subsidies = _get_subsidies(optimization_setup)
+        if subsidies:
+            # name the subsidy like the capacity-additions plot (e.g.
+            # ``hp_capex_DE``): prefer the scenario label threaded through the
+            # config, else derive ``<tech>_<type>_<node>`` from the entries.
+            label = config.get("subsidy_label")
+            if not label:
+                label = "__".join(
+                    f"{s['technology']}_{s['type']}_{s['node']}" for s in subsidies
+                )
+            name_parts.append(str(label))
+    file_name = "_".join(name_parts) + ".csv"
+
+    # write into the visualization root (one level above the timestamp folder)
     if output_dir is None:
-        out = _get_run_output_dir(optimization_setup)
+        out = Path(_get_output_dir(optimization_setup))
     else:
-        from pathlib import Path
+        out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
 
-        out = Path(output_dir) / _get_run_timestamp()
-        out.mkdir(parents=True, exist_ok=True)
-
-    csv_path = out / "profitability_components.csv"
+    csv_path = out / file_name
     header = not csv_path.exists()
     df.to_csv(csv_path, mode="a", header=header, index=False)
     print(

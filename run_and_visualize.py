@@ -181,6 +181,54 @@ def visualize_capacity_additions(
 
 
 
+def format_subsidies(subsidies) -> str:
+    """Compact, CSV-friendly descriptor of a list of subsidy entries.
+
+    Each entry (plugin format ``{technology, node, type, amount, carrier?}``) is
+    rendered as ``<tech>@<node>:<type>=<amount>[/<carrier>]``; entries are joined
+    with ``;``. Returns ``"none"`` for an empty/missing list.
+    """
+    if not subsidies:
+        return "none"
+    parts = []
+    for s in subsidies:
+        try:
+            piece = f"{s['technology']}@{s['node']}:{s['type']}={s['amount']:g}"
+        except (KeyError, TypeError, ValueError):
+            parts.append(str(s))
+            continue
+        if s.get("carrier"):
+            piece += f"/{s['carrier']}"
+        parts.append(piece)
+    return ";".join(parts)
+
+
+def order_run_summary_columns(cols: list[str]) -> list[str]:
+    """Left-to-right layout for ``run_summary.csv``.
+
+    Timestamp + run metadata + system params + total/per-year costs (all
+    "meta" columns) come first, THEN capacity additions (``cap|...``), THEN
+    shadow prices (``sp|...``). Shared with the offline rebuild script so both
+    produce an identical column order.
+    """
+    preferred = [
+        "run_timestamp", "optimization", "subsidies", "total_cost",
+        "optimized_years", "interval_between_years",
+        "aggregated_time_steps_per_year", "foresight_mode",
+        "years_in_rolling_horizon",
+    ]
+    cap_cols = [c for c in cols if c.startswith("cap|")]
+    sp_cols = [c for c in cols if c.startswith("sp|")]
+    cost_year = sorted(
+        (c for c in cols if c.startswith("cost_disc|year_")),
+        key=lambda c: int(c.rsplit("_", 1)[1]),
+    )
+    front = [c for c in preferred if c in cols]
+    used = set(front) | set(cap_cols) | set(sp_cols) | set(cost_year)
+    other = [c for c in cols if c not in used]
+    return front + cost_year + other + cap_cols + sp_cols
+
+
 def record_run_summary(
     csv_name: str = "run_summary.csv",
     output_path: Path | None = None,
@@ -232,11 +280,88 @@ def record_run_summary(
     else:
         row["optimization"] = "total_cost"
 
-    # --- total cost ---
-    npc = results.get_total("net_present_cost")
-    if isinstance(npc, pd.DataFrame):
-        npc = npc.iloc[:, 0] if npc.shape[1] else pd.Series(dtype=float)
-    total_cost = float(pd.Series(npc).sum()) if npc is not None else float("nan")
+    # --- subsidies active this run (from the same in-process plugin config) ---
+    # Record a compact descriptor so sweeps over subsidy scenarios are
+    # filterable in run_summary.csv. Format per entry:
+    #   <tech>@<node>:<type>=<amount>[/<carrier>]  joined by ";"  ("none" if empty)
+    subsidies = plugin_config.get("subsidies", []) or []
+    row["subsidies"] = format_subsidies(subsidies)
+
+    # --- system parameters of this run ---
+    # Pulled from the (first) scenario's system object so the CSV documents the
+    # foresight setup each row was produced under (crucial because the reported
+    # net_present_cost is only comparable across runs when normalized to the
+    # same reference year, see total_cost below).
+    try:
+        scenario = next(iter(results.solution_loader.scenarios.values()))
+        system = scenario.system
+    except Exception:
+        scenario = None
+        system = None
+
+    optimized_years = int(getattr(system, "optimized_years", 0)) if system else 0
+    interval = int(getattr(system, "interval_between_years", 1)) if system else 1
+    if system is not None:
+        row["optimized_years"] = optimized_years
+        row["interval_between_years"] = interval
+        row["aggregated_time_steps_per_year"] = int(
+            getattr(system, "aggregated_time_steps_per_year", 0)
+        )
+        use_rolling = bool(getattr(system, "use_rolling_horizon", False))
+        row["foresight_mode"] = (
+            "rolling_horizon" if use_rolling else "perfect_foresight"
+        )
+        # only meaningful in rolling horizon; left blank for perfect foresight
+        row["years_in_rolling_horizon"] = (
+            int(getattr(system, "years_in_rolling_horizon", 0)) if use_rolling else ""
+        )
+
+    # --- total cost: net present cost discounted to the REFERENCE YEAR ---
+    # The model's saved ``net_present_cost`` discounts each year to
+    # ``set_time_steps_yearly[0]``, which in a rolling horizon is reset to the
+    # first year of every step's window (optimization_setup.py). Summing those
+    # per-step values therefore drops the cross-period discounting and inflates
+    # the total (rolling horizon came out ~70% above perfect foresight purely
+    # for this reason). We instead recompute the NPC from the undiscounted
+    # annual ``cost_total`` and discount every year back to year 0 (the
+    # reference year), mirroring ``constraint_net_present_cost`` with a fixed
+    # base year, so perfect-foresight and rolling-horizon totals are comparable.
+    r = float("nan")
+    if scenario is not None:
+        try:
+            dr_component = scenario.get_component("discount_rate")
+            r = float(
+                results.solution_loader.get_component_data(
+                    scenario, dr_component
+                ).squeeze()
+            )
+        except Exception:
+            r = float("nan")
+
+    cost = results.get_total("cost_total")
+    if isinstance(cost, pd.DataFrame):
+        cost = cost.iloc[0] if cost.shape[0] >= 1 else pd.Series(dtype=float)
+    cost = pd.Series(cost)
+
+    total_cost = float("nan")
+    if len(cost) and pd.notna(r):
+        # ``cost_total`` is the undiscounted annual cost, indexed by support
+        # (calendar) year. Discount every support year back to the first one
+        # using its POSITIONAL index, mirroring constraint_net_present_cost
+        # with a fixed base year so all foresight modes are comparable.
+        n = len(cost)
+        total_cost = 0.0
+        for pos in range(n):
+            # the last support year of the horizon represents a single year
+            # (dy=1); every earlier one represents ``interval`` years
+            dy = 1 if pos == n - 1 else interval
+            factor = sum(
+                (1.0 / (1.0 + r)) ** (interval * pos + i) for i in range(dy)
+            )
+            year_label = cost.index[pos]
+            cost_disc_y = float(cost.iloc[pos]) * factor
+            row[f"cost_disc|year_{year_label}"] = cost_disc_y
+            total_cost += cost_disc_y
     row["total_cost"] = total_cost
 
     # --- capacity additions per (tech, node, year) ---
@@ -274,11 +399,7 @@ def record_run_summary(
     # of optimized year `y` only. We take the row-wise mean across those columns
     # so each (carrier, node, year) gets one number, then emit a column
     # `sp|<carrier>|<node>|year_<y>`.
-    try:
-        first_scenario = next(iter(results.solution_loader.scenarios.values()))
-        n_years = int(first_scenario.system.optimized_years)
-    except Exception:
-        n_years = 0
+    n_years = optimized_years
 
     for y in range(n_years):
         try:
@@ -309,9 +430,7 @@ def record_run_summary(
         for c in row.keys():
             if c not in all_cols:
                 all_cols.append(c)
-        # keep the optimization column at the second position across schema changes
-        if "optimization" in all_cols:
-            all_cols.insert(1, all_cols.pop(all_cols.index("optimization")))
+        all_cols = order_run_summary_columns(all_cols)
         new_row_df = pd.DataFrame([row]).reindex(columns=all_cols)
         if list(existing.columns) != all_cols:
             existing = existing.reindex(columns=all_cols)
@@ -323,7 +442,8 @@ def record_run_summary(
                 quoting=csv.QUOTE_MINIMAL,
             )
     else:
-        pd.DataFrame([row]).to_csv(
+        cols = order_run_summary_columns(list(row.keys()))
+        pd.DataFrame([row]).reindex(columns=cols).to_csv(
             out_path, index=False, quoting=csv.QUOTE_MINIMAL,
         )
     print(f"Appended run summary to {out_path}")
@@ -437,19 +557,30 @@ def visualize_profitability_over_years(csv_path: str | Path | None = None) -> No
 BIAS_OUTPUT_CARRIERS: list[str] = []
 
 
-def create_variation_configs(bias_weights) -> list[tuple[str, Path]]:
-    """Write one config file per bias weight next to the base ``config.json``.
+def create_variation_configs(
+    bias_weights, subsidy_scenarios=None
+) -> list[tuple[str, Path]]:
+    """Write one config file per (bias weight x subsidy scenario) combination.
 
     Copies the dataset's ``config.json`` and overwrites the
     ``investment_decisions`` plugin entry: a ``None`` weight creates a baseline
     config with the profitability bias disabled, a numeric weight enables the
     bias with that ``bias_weight`` and restricts it to the output carriers in
-    ``BIAS_OUTPUT_CARRIERS``. The variants are written as
-    ``config_<label>.json`` into ``DATASET_ROOT`` (same directory as the base
-    config, so relative paths inside the config resolve identically).
+    ``BIAS_OUTPUT_CARRIERS``. Each combination additionally writes the scenario's
+    ``subsidies`` list into the plugin config (see the plugin's subsidy format:
+    a list of ``{technology, node, type, amount, carrier?}`` entries, with
+    ``type`` one of ``capex`` / ``fixed_opex`` / ``variable_opex`` /
+    ``remuneration``). The variants are written as ``config_<label>.json`` into
+    ``DATASET_ROOT`` (same directory as the base config, so relative paths
+    inside the config resolve identically).
 
     Args:
         bias_weights: iterable of weights, e.g. ``[None, 0.25, 0.5, 1.0]``.
+        subsidy_scenarios: iterable of ``(sub_label, subsidies)`` pairs, where
+            ``subsidies`` is a list of subsidy entries (possibly empty).
+            Defaults to a single no-subsidy scenario, so the behaviour is
+            identical to a pure bias-weight sweep. The full sweep is the cross
+            product ``bias_weights x subsidy_scenarios``.
 
     Returns:
         list of ``(label, config_path)`` tuples in input order.
@@ -457,35 +588,81 @@ def create_variation_configs(bias_weights) -> list[tuple[str, Path]]:
     import copy
     import json
 
+    if subsidy_scenarios is None:
+        subsidy_scenarios = [("no_subsidy", [])]
+
     with open(CONFIG_PATH) as f:
         base_config = json.load(f)
 
     variations: list[tuple[str, Path]] = []
     for weight in bias_weights:
-        label = "no_bias" if weight is None else f"bias_weight_{weight}"
-        cfg = copy.deepcopy(base_config)
-        plugin_cfg = cfg.setdefault("plugins", {}).setdefault(
-            "investment_decisions", {}
-        )
-        if weight is None:
-            plugin_cfg["profitability_bias_enabled"] = False
-        else:
-            plugin_cfg["profitability_bias_enabled"] = True
-            plugin_cfg["bias_weight"] = weight
-            plugin_cfg["bias_output_carriers"] = list(BIAS_OUTPUT_CARRIERS)
+        bias_label = "no_bias" if weight is None else f"bias_weight_{weight}"
+        for sub_label, subsidies in subsidy_scenarios:
+            # only append the subsidy tag when subsidies are actually applied,
+            # so a plain bias sweep keeps its original folder/plot names
+            label = (
+                bias_label
+                if sub_label in (None, "", "no_subsidy") or not subsidies
+                else f"{bias_label}__{sub_label}"
+            )
+            cfg = copy.deepcopy(base_config)
+            plugin_cfg = cfg.setdefault("plugins", {}).setdefault(
+                "investment_decisions", {}
+            )
+            if weight is None:
+                plugin_cfg["profitability_bias_enabled"] = False
+            else:
+                plugin_cfg["profitability_bias_enabled"] = True
+                plugin_cfg["bias_weight"] = weight
+                plugin_cfg["bias_output_carriers"] = list(BIAS_OUTPUT_CARRIERS)
 
-        config_path = DATASET_ROOT / f"config_{label}.json"
-        with open(config_path, "w") as f:
-            json.dump(cfg, f, indent=4)
-        variations.append((label, config_path))
-        print(f"Created variation config: {config_path}")
+            plugin_cfg["subsidies"] = copy.deepcopy(list(subsidies))
+            # carry the scenario label so the profitability CSV can be named the
+            # same way as the capacity-additions plot (e.g. ``hp_capex_DE``);
+            # only set when subsidies are actually applied.
+            if subsidies and sub_label not in (None, "", "no_subsidy"):
+                plugin_cfg["subsidy_label"] = sub_label
+
+            config_path = DATASET_ROOT / f"config_{label}.json"
+            with open(config_path, "w") as f:
+                json.dump(cfg, f, indent=4)
+            variations.append((label, config_path))
+            print(f"Created variation config: {config_path}")
     return variations
 
 
 # bias weights to run in one program start; ``None`` = baseline without bias
-#BIAS_WEIGHTS: list[float | None] = [None, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 5.0, 10.0, 50, 100] 
-#BIAS_WEIGHTS: list[float | None] = [None, 0.1, 0.3, 0.5]
-BIAS_WEIGHTS: list[float | None] = [0.3]
+BIAS_WEIGHTS: list[float | None] = [None, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 50, 100]
+#BIAS_WEIGHTS: list[float | None] = [None, 0.5]
+#BIAS_WEIGHTS: list[float | None] = [None]
+
+
+# Subsidy scenarios to run in one program start. Each entry is a
+# ``(label, subsidies)`` pair; ``subsidies`` is a list of entries in the plugin
+# format. ``type`` is one of:
+#   - "capex"         : one-time relief in the decision year [money/GW added]
+#   - "fixed_opex"    : annual lump-sum relief [money/GW added], discounted
+#   - "variable_opex" : per-MWh relief [money/MWh] on the reference-carrier flow
+#   - "remuneration"  : fixed feed-in price [money/MWh] for an output "carrier"
+#                       (requires the extra key "carrier")
+# The full sweep is the cross product BIAS_WEIGHTS x SUBSIDY_SCENARIOS. Keep the
+# default first entry to include the no-subsidy baseline.
+SUBSIDY_SCENARIOS: list[tuple[str, list[dict]]] = [
+    ("no_subsidy", []),
+    # DE Einspeiseverguetung PV: 11 ct/kWh = 0.11 MEUR/GWh (Volleinspeisung)
+    # https://www.deutsche-sanierungsberatung.de/artikel/einspeisevergutung-2025
+    ("pv_remun_DE", [ {"technology": "photovoltaics", "node": "DE", "type": "remuneration", "amount": 0.11, "carrier": "electricity"}, ]),
+    # DE Heat-Pump CAPEX-Foerderung: ~40% (30% Grundfoerderung + Zuschlaege, max 70%)
+    # = 350 EUR/kW = 350 MEUR/GW  https://www.kfw.de/inlandsfoerderung/Heizungsfoerderung/
+    ("hp_capex_DE", [ {"technology": "heat_pump", "node": "DE", "type": "capex", "amount": 350}, ]),
+    # DE CO2-Steuer Gas: 65 EUR statt 100 EUR -> 35 EUR Differenz
+    # = 0.00710412 MEUR/GWh (variable OPEX-Entlastung)
+    # https://www.schwaebisch-hall.de/ratgeber/pflichten-und-regelungen/co2-steuer.html
+    ("gasboiler_co2_DE", [ {"technology": "natural_gas_boiler", "node": "DE", "type": "variable_opex", "amount": 0.00710412}, ]),
+    # IT Kapazitaetsmarkt: 70 MEUR/GW fuer Neukapazitaet
+    # https://montelnews.com/news/0ee08042-a098-47ed-a3cc-a30cc0f88192/italy-tso-to-hold-new-capacity-auction-on-25-july
+    ("gasturbine_capmarket_IT", [ {"technology": "natural_gas_turbine", "node": "IT", "type": "fixed_opex", "amount": 70}, ]),
+]
 
 
 
@@ -497,7 +674,7 @@ if __name__ == "__main__":
     time_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     sweep_root = DATASET_ROOT / "outputs" / f"bias_sweep_{time_str}"
 
-    for label, config_file in create_variation_configs(BIAS_WEIGHTS):
+    for label, config_file in create_variation_configs(BIAS_WEIGHTS, SUBSIDY_SCENARIOS):
         print(f"\n================ Variation: {label} ================\n")
         result_folder = sweep_root / label
         # pre-create the nested folder: ZEN-garden's setup_output_folder uses
