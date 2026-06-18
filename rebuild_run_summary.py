@@ -40,10 +40,11 @@ from run_and_visualize import (
 )
 
 MODEL_NAME = DATASET_PATH.name  # inner results folder per variation ("Crystal_Ball")
-DEFAULT_SWEEP = (
-    DATASET_PATH.parent
-    / "outputs"
-    / "bias_sweep_2026-06-13_23-29-43"
+
+# Sweep folder to rebuild the run summary for. Override here (or pass the folder
+# as the first CLI argument) to point at a different bias-sweep run.
+DEFAULT_SWEEP = Path(
+    r"D:\Students\ssambale_jwiegner\Crystal-Ball-small\data\outputs\bias_sweep_2026-06-13_13-03-04"
 )
 
 # The subsidy descriptor for a variation is normally recovered from the live
@@ -168,6 +169,22 @@ def build_row(results_path: Path, label: str, with_duals: bool = True) -> dict:
             row[f"cost_disc|year_{year_label}"] = cost_disc_y
             total_cost += cost_disc_y
     row["total_cost"] = total_cost
+
+    # --- total carbon emissions: cumulative emissions in the last optimized year ---
+    total_carbon_emissions = float("nan")
+    try:
+        emissions = results.get_total("carbon_emissions_cumulative")
+        if isinstance(emissions, pd.DataFrame):
+            emissions = (
+                emissions.iloc[0] if emissions.shape[0] >= 1
+                else pd.Series(dtype=float)
+            )
+        emissions = pd.Series(emissions)
+        if len(emissions):
+            total_carbon_emissions = float(emissions.iloc[-1])
+    except Exception as exc:
+        print(f"    Warning: no total carbon emissions: {exc}")
+    row["total_carbon_emissions"] = total_carbon_emissions
 
     # --- capacity additions per (tech, node, year) ---
     cap = results.get_df("capacity_addition")

@@ -1,4 +1,3 @@
-"""Helpers for extracting investor-relevant signals from a solved optimization."""
 
 import logging
 
@@ -6,8 +5,6 @@ import numpy as np
 import pandas as pd
 
 
-# timestamp of the current program run, shared across all optimization steps so
-# that every ``visualization`` call of one run writes into the same folder.
 _RUN_TIMESTAMP: str | None = None
 
 def _get_run_timestamp() -> str:

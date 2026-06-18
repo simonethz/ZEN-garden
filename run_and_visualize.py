@@ -6,8 +6,7 @@ import pandas as pd
 
 from zen_garden import Results, run
 
-DATASET = 0 #0 for Crystal-Ball-small remote, 1 for Crystal-Ball full remote, 2 for Crystal-Ball-small local, 3 for Climate resilience remote, 4 for Crystal-Ball reduced remote
-
+DATASET = 0
 
 def get_dataset_root() -> Path:
     """Return the dataset root for the dataset selected via ``DATASET``.
@@ -20,19 +19,16 @@ def get_dataset_root() -> Path:
     * ``3`` – Climate resilience auf Remote-Rechner
     * ``4`` – Crystal-Ball reduced auf Remote-Rechner
     * ``5`` – Crystal-Ball-origial auf remote Rechner
-
-    Raises:
-        ValueError: if ``DATASET`` is not one of the supported values (0, 1, 2, 3, 4, 5).
-        FileNotFoundError: if the selected dataset root does not exist.
     """
+
     if DATASET == 0:
-        # Crystal-Ball-small, remote -- Pfad ggf. anpassen
+        # Crystal-Ball-small, remote 
         root = Path("D:/Students/ssambale_jwiegner/Crystal-Ball-small/data") 
     elif DATASET == 1:
         # Crystal-Ball (full), remote
         root = Path("D:/Students/ssambale_jwiegner/Crystal-Ball/data")
     elif DATASET == 2:
-        # Crystal-Ball-small, local -- Pfad ggf. anpassen
+        # Crystal-Ball-small, local 
         root = Path("C:/Crystal-Ball-small/data") 
     elif DATASET == 3:
         # Climate resilience, remote
@@ -86,11 +82,6 @@ def visualize_capacity_additions(
 
     One bar per (node, year); years for the same node sit next to each other.
     Saved to ``<dataset_root_parent>/visualization/<plot_name>``.
-
-    Args:
-        output_path: results folder to read; defaults to ``OUTPUT_PATH``.
-        plot_name: file name of the saved chart; override per variation so
-            sweep runs do not overwrite each other.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -204,15 +195,11 @@ def format_subsidies(subsidies) -> str:
 
 
 def order_run_summary_columns(cols: list[str]) -> list[str]:
-    """Left-to-right layout for ``run_summary.csv``.
+    """Left-to-right layout for ``run_summary.csv``.    """
 
-    Timestamp + run metadata + system params + total/per-year costs (all
-    "meta" columns) come first, THEN capacity additions (``cap|...``), THEN
-    shadow prices (``sp|...``). Shared with the offline rebuild script so both
-    produce an identical column order.
-    """
     preferred = [
         "run_timestamp", "optimization", "subsidies", "total_cost",
+        "total_carbon_emissions",
         "optimized_years", "interval_between_years",
         "aggregated_time_steps_per_year", "foresight_mode",
         "years_in_rolling_horizon",
@@ -243,12 +230,6 @@ def record_run_summary(
         balance over the full-resolution time series (analogous to
         `extract_normalized_dual` -> averaged across time)
 
-    Location: same as `visualize_capacity_additions` (DATASET_ROOT.parent /
-    "visualization"), so columns across runs of the same dataset are aligned.
-
-    Args:
-        csv_name: file name of the shared summary CSV.
-        output_path: results folder to read; defaults to ``OUTPUT_PATH``.
     """
     from datetime import datetime
     import csv
@@ -258,8 +239,7 @@ def record_run_summary(
         "run_timestamp": datetime.now().isoformat(timespec="seconds"),
     }
 
-    # --- optimization mode + bias value (from the investment_decisions plugin
-    # config, populated in-process by register_plugins during the run) ---
+    # --- optimization mode + bias value (from the investment_decisions plugin config, populated in-process by register_plugins during the run) ---
     try:
         from zen_garden.plugins.investment_decisions.plugin import (
             config as plugin_config,
@@ -281,17 +261,10 @@ def record_run_summary(
         row["optimization"] = "total_cost"
 
     # --- subsidies active this run (from the same in-process plugin config) ---
-    # Record a compact descriptor so sweeps over subsidy scenarios are
-    # filterable in run_summary.csv. Format per entry:
-    #   <tech>@<node>:<type>=<amount>[/<carrier>]  joined by ";"  ("none" if empty)
     subsidies = plugin_config.get("subsidies", []) or []
     row["subsidies"] = format_subsidies(subsidies)
 
     # --- system parameters of this run ---
-    # Pulled from the (first) scenario's system object so the CSV documents the
-    # foresight setup each row was produced under (crucial because the reported
-    # net_present_cost is only comparable across runs when normalized to the
-    # same reference year, see total_cost below).
     try:
         scenario = next(iter(results.solution_loader.scenarios.values()))
         system = scenario.system
@@ -316,16 +289,7 @@ def record_run_summary(
             int(getattr(system, "years_in_rolling_horizon", 0)) if use_rolling else ""
         )
 
-    # --- total cost: net present cost discounted to the REFERENCE YEAR ---
-    # The model's saved ``net_present_cost`` discounts each year to
-    # ``set_time_steps_yearly[0]``, which in a rolling horizon is reset to the
-    # first year of every step's window (optimization_setup.py). Summing those
-    # per-step values therefore drops the cross-period discounting and inflates
-    # the total (rolling horizon came out ~70% above perfect foresight purely
-    # for this reason). We instead recompute the NPC from the undiscounted
-    # annual ``cost_total`` and discount every year back to year 0 (the
-    # reference year), mirroring ``constraint_net_present_cost`` with a fixed
-    # base year, so perfect-foresight and rolling-horizon totals are comparable.
+    # --- total cost: net present cost discounted to the reference year to enable comparison of rolling horizon and perfect foresight ---
     r = float("nan")
     if scenario is not None:
         try:
@@ -345,15 +309,9 @@ def record_run_summary(
 
     total_cost = float("nan")
     if len(cost) and pd.notna(r):
-        # ``cost_total`` is the undiscounted annual cost, indexed by support
-        # (calendar) year. Discount every support year back to the first one
-        # using its POSITIONAL index, mirroring constraint_net_present_cost
-        # with a fixed base year so all foresight modes are comparable.
         n = len(cost)
         total_cost = 0.0
         for pos in range(n):
-            # the last support year of the horizon represents a single year
-            # (dy=1); every earlier one represents ``interval`` years
             dy = 1 if pos == n - 1 else interval
             factor = sum(
                 (1.0 / (1.0 + r)) ** (interval * pos + i) for i in range(dy)
@@ -363,6 +321,22 @@ def record_run_summary(
             row[f"cost_disc|year_{year_label}"] = cost_disc_y
             total_cost += cost_disc_y
     row["total_cost"] = total_cost
+
+    # --- total carbon emissions: cumulative emissions in the last optimized year ---
+    total_carbon_emissions = float("nan")
+    try:
+        emissions = results.get_total("carbon_emissions_cumulative")
+        if isinstance(emissions, pd.DataFrame):
+            emissions = (
+                emissions.iloc[0] if emissions.shape[0] >= 1
+                else pd.Series(dtype=float)
+            )
+        emissions = pd.Series(emissions)
+        if len(emissions):
+            total_carbon_emissions = float(emissions.iloc[-1])
+    except Exception as exc:
+        print(f"  Warning: could not extract total carbon emissions: {exc}")
+    row["total_carbon_emissions"] = total_carbon_emissions
 
     # --- capacity additions per (tech, node, year) ---
     cap = results.get_df("capacity_addition")
@@ -394,11 +368,7 @@ def record_run_summary(
             ).sum().items():
                 row[f"cap|{tech}|{node}|{year}"] = float(val)
 
-    # --- shadow prices: mean over the full-resolution time series, PER YEAR ---
-    # `get_dual` with `year=y` returns the dual columns for the base time steps
-    # of optimized year `y` only. We take the row-wise mean across those columns
-    # so each (carrier, node, year) gets one number, then emit a column
-    # `sp|<carrier>|<node>|year_<y>`.
+    # --- shadow prices: mean over the full-resolution time series, per year ---
     n_years = optimized_years
 
     for y in range(n_years):
@@ -467,21 +437,6 @@ def _latest_profitability_csv() -> Path | None:
 
 def visualize_profitability_over_years(csv_path: str | Path | None = None) -> None:
     """For each output carrier, plot the profitability development over decision years.
-
-    Reads ``profitability_components.csv`` (written per optimization step by the
-    investment_decisions plugin) and draws, per output carrier, one line per
-    (technology, node) pair showing the net discounted profitability across the
-    successive ``decision_year`` values of a rolling-horizon run.
-
-    A technology with several output carriers appears in several carrier charts
-    (its ``output_carrier`` cell holds the carriers joined with ``", "`` and is
-    split here). Charts are saved next to the CSV as
-    ``profitability_over_years_<carrier>.png``.
-
-    Args:
-        csv_path: path to the CSV. Defaults to the newest
-            ``profitability_components.csv`` under
-            ``<dataset_root>/visualization``.
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -499,8 +454,7 @@ def visualize_profitability_over_years(csv_path: str | Path | None = None) -> No
         print(f"{csv_path} is empty; skipping plots.")
         return
 
-    # one technology may produce several output carriers -> split and explode so
-    # each row is attributed to every carrier it contributes to.
+    # one technology may produce several output carriers -> split and explode so each row is attributed to every carrier it contributes to.
     df["output_carrier"] = df["output_carrier"].fillna("").astype(str)
     df = df.assign(output_carrier=df["output_carrier"].str.split(", ")).explode(
         "output_carrier"
@@ -540,7 +494,7 @@ def visualize_profitability_over_years(csv_path: str | Path | None = None) -> No
         ax.set_title(f"Profitability development – output carrier '{carrier}'")
         ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
         ax.grid(axis="both", linestyle=":", alpha=0.5)
-        # integer ticks on the decision-year axis
+
         years = sorted(carrier_df["decision_year"].unique())
         ax.set_xticks(years)
 
@@ -551,9 +505,8 @@ def visualize_profitability_over_years(csv_path: str | Path | None = None) -> No
         print(f"Saved profitability-over-years plot to {out_path}")
 
 
-# restrict the profitability bias (and thereby the ratio_min normalization) to
-# technologies producing at least one of these carriers; note that the
-# district-heating techs (*_DH) output "district_heat", not "heat"
+# restrict the profitability bias (and thereby the ratio_min normalization) to technologies producing at least one of these carriers 
+# (e.g. to evaluate the effect one one carrier without having to adjust the entire dataset)
 BIAS_OUTPUT_CARRIERS: list[str] = []
 
 
@@ -631,37 +584,28 @@ def create_variation_configs(
     return variations
 
 
-# bias weights to run in one program start; ``None`` = baseline without bias
-BIAS_WEIGHTS: list[float | None] = [None, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 50, 100]
-#BIAS_WEIGHTS: list[float | None] = [None, 0.5]
+# bias weights to run in one program start; ``None`` = total_cost
+#BIAS_WEIGHTS: list[float | None] = [None, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 50, 100]
+BIAS_WEIGHTS: list[float | None] = [None, 0.2, 0.5, 0.8, 5.0]
 #BIAS_WEIGHTS: list[float | None] = [None]
 
 
-# Subsidy scenarios to run in one program start. Each entry is a
-# ``(label, subsidies)`` pair; ``subsidies`` is a list of entries in the plugin
-# format. ``type`` is one of:
+# Subsidy scenarios to run in one program start. 
 #   - "capex"         : one-time relief in the decision year [money/GW added]
 #   - "fixed_opex"    : annual lump-sum relief [money/GW added], discounted
 #   - "variable_opex" : per-MWh relief [money/MWh] on the reference-carrier flow
-#   - "remuneration"  : fixed feed-in price [money/MWh] for an output "carrier"
-#                       (requires the extra key "carrier")
-# The full sweep is the cross product BIAS_WEIGHTS x SUBSIDY_SCENARIOS. Keep the
-# default first entry to include the no-subsidy baseline.
+#   - "remuneration"  : fixed feed-in price [money/MWh] for an output "carrier" (requires the extra key "carrier")
+# The full sweep is the cross product BIAS_WEIGHTS x SUBSIDY_SCENARIOS. Keep the default first entry to include the no-subsidy baseline.
 SUBSIDY_SCENARIOS: list[tuple[str, list[dict]]] = [
     ("no_subsidy", []),
-    # DE Einspeiseverguetung PV: 11 ct/kWh = 0.11 MEUR/GWh (Volleinspeisung)
-    # https://www.deutsche-sanierungsberatung.de/artikel/einspeisevergutung-2025
-    ("pv_remun_DE", [ {"technology": "photovoltaics", "node": "DE", "type": "remuneration", "amount": 0.11, "carrier": "electricity"}, ]),
-    # DE Heat-Pump CAPEX-Foerderung: ~40% (30% Grundfoerderung + Zuschlaege, max 70%)
-    # = 350 EUR/kW = 350 MEUR/GW  https://www.kfw.de/inlandsfoerderung/Heizungsfoerderung/
-    ("hp_capex_DE", [ {"technology": "heat_pump", "node": "DE", "type": "capex", "amount": 350}, ]),
-    # DE CO2-Steuer Gas: 65 EUR statt 100 EUR -> 35 EUR Differenz
-    # = 0.00710412 MEUR/GWh (variable OPEX-Entlastung)
-    # https://www.schwaebisch-hall.de/ratgeber/pflichten-und-regelungen/co2-steuer.html
-    ("gasboiler_co2_DE", [ {"technology": "natural_gas_boiler", "node": "DE", "type": "variable_opex", "amount": 0.00710412}, ]),
+    # DE Einspeiseverguetung PV: 11 ct/kWh = 0.11 MEUR/GWh
+    #("pv_remun_DE", [ {"technology": "photovoltaics", "node": "DE", "type": "remuneration", "amount": 0.11, "carrier": "electricity"}, ]),
+    # DE Heat-Pump CAPEX-Foerderung: 350 MEUR/GW 
+    #("hp_capex_DE", [ {"technology": "heat_pump", "node": "DE", "type": "capex", "amount": 350}, ]),
+    # DE CO2-Steuer Gas: 65 EUR statt 100 EUR -> 35 EUR Differenz = 0.00710412 MEUR/GWh 
+    #("gasboiler_co2_DE", [ {"technology": "natural_gas_boiler", "node": "DE", "type": "variable_opex", "amount": 0.00710412}, ]),
     # IT Kapazitaetsmarkt: 70 MEUR/GW fuer Neukapazitaet
-    # https://montelnews.com/news/0ee08042-a098-47ed-a3cc-a30cc0f88192/italy-tso-to-hold-new-capacity-auction-on-25-july
-    ("gasturbine_capmarket_IT", [ {"technology": "natural_gas_turbine", "node": "IT", "type": "fixed_opex", "amount": 70}, ]),
+    #("gasturbine_capmarket_IT", [ {"technology": "natural_gas_turbine", "node": "IT", "type": "fixed_opex", "amount": 70}, ]),
 ]
 
 
@@ -677,12 +621,8 @@ if __name__ == "__main__":
     for label, config_file in create_variation_configs(BIAS_WEIGHTS, SUBSIDY_SCENARIOS):
         print(f"\n================ Variation: {label} ================\n")
         result_folder = sweep_root / label
-        # pre-create the nested folder: ZEN-garden's setup_output_folder uses
-        # plain os.mkdir, which cannot create more than one level at once
         result_folder.mkdir(parents=True, exist_ok=True)
 
-        # new timestamped visualization folder per variation, so the
-        # profitability CSVs/plots of the variations do not mix
         investment_decisions._RUN_TIMESTAMP = None
 
         run_dataset(config_file, result_folder)
