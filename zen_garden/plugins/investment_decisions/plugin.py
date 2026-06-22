@@ -17,8 +17,7 @@ The plugin hooks into two optimisation events:
 
 The ``config`` dictionary is filled by ``plugins.loader.register_plugins()`` and
 controls the bias (``profitability_bias_enabled``, ``bias_weight``,
-``bias_output_carriers``) and the optional ``subsidies``. See the plugin
-documentation for the full description of the methodology and options.
+``bias_output_carriers``) and the optional ``subsidies``.
 """
 
 import logging
