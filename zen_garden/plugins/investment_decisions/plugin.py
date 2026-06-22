@@ -22,9 +22,9 @@ class DualLogger:
         self.terminal = sys.stdout
         self.log_file = open(filename, "a", encoding="utf-8")
         
-        # Optional: Einen Zeitstempel in die Datei schreiben, sobald das Event auslöst
-        jetzt = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.log_file.write(f"\n=== Event 'after_optimization' getriggert am {jetzt} ===\n")
+        # write a timestamp to the file when the event fires
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.log_file.write(f"\n=== Event 'after_optimization' triggered at {now} ===\n")
 
     def write(self, message):
         self.terminal.write(message)
@@ -40,10 +40,10 @@ def log_block(filename):
     original_stdout = sys.stdout
     sys.stdout = logger
     try:
-        yield # Hier läuft der Code deines with-Blocks
+        yield  # the body of the with-block runs here
     finally:
-        sys.stdout = original_stdout # Standardausgabe wiederherstellen
-        logger.log_file.close()      # Datei sicher schließen
+        sys.stdout = original_stdout  # restore standard output
+        logger.log_file.close()       # close the file safely
 
 
 @EventPublisher.register(Event.event_before_solve)

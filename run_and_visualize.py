@@ -6,7 +6,32 @@ import pandas as pd
 
 from zen_garden import Results, run
 
+# set dataset root by selecting one of the predefined paths in `get_dataset_root()`; adjust the paths in that function as needed to run on your machine
 DATASET = 0
+
+#bias weights to run in one program start; ``None`` = total_cost
+#BIAS_WEIGHTS: list[float | None] = [None, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 50, 100]
+#BIAS_WEIGHTS: list[float | None] = [None, 0.2, 0.5, 0.8, 5.0]
+BIAS_WEIGHTS: list[float | None] = [None]
+
+
+# Subsidy scenarios to run in one program start. 
+#   - "capex"         : one-time relief in the decision year [money/GW added]
+#   - "fixed_opex"    : annual lump-sum relief [money/GW added], discounted
+#   - "variable_opex" : per-MWh relief [money/MWh] on the reference-carrier flow
+#   - "remuneration"  : fixed feed-in price [money/MWh] for an output "carrier" (requires the extra key "carrier")
+# The full sweep is the cross product BIAS_WEIGHTS x SUBSIDY_SCENARIOS. Keep the default first entry to include the no-subsidy baseline.
+SUBSIDY_SCENARIOS: list[tuple[str, list[dict]]] = [
+    ("no_subsidy", []),
+    #("pv_remun_DE", [ {"technology": "photovoltaics", "node": "DE", "type": "remuneration", "amount": 0.11, "carrier": "electricity"}, ]),
+    #("hp_capex_DE", [ {"technology": "heat_pump", "node": "DE", "type": "capex", "amount": 350}, ]),
+    #("gasboiler_co2_DE", [ {"technology": "natural_gas_boiler", "node": "DE", "type": "variable_opex", "amount": 0.00710412}, ]),
+    #("gasturbine_capmarket_IT", [ {"technology": "natural_gas_turbine", "node": "IT", "type": "fixed_opex", "amount": 70}, ]),
+]
+
+# bias acts only on conversion technologies with at least one of these output carriers; if empty, bias applies to all output carriers
+BIAS_OUTPUT_CARRIERS: list[str] = []
+
 
 def get_dataset_root() -> Path:
     """Return the dataset root for the dataset selected via ``DATASET``.
@@ -74,6 +99,7 @@ def run_dataset(config_path: Path | None = None, folder_output: Path | None = No
     )
 
 
+# capacity additions diagramms
 def visualize_capacity_additions(
     output_path: Path | None = None,
     plot_name: str = "capacity_additions.png",
@@ -214,6 +240,7 @@ def order_run_summary_columns(cols: list[str]) -> list[str]:
     used = set(front) | set(cap_cols) | set(sp_cols) | set(cost_year)
     other = [c for c in cols if c not in used]
     return front + cost_year + other + cap_cols + sp_cols
+
 
 
 def record_run_summary(
@@ -505,27 +532,13 @@ def visualize_profitability_over_years(csv_path: str | Path | None = None) -> No
         print(f"Saved profitability-over-years plot to {out_path}")
 
 
-# restrict the profitability bias (and thereby the ratio_min normalization) to technologies producing at least one of these carriers 
-# (e.g. to evaluate the effect one one carrier without having to adjust the entire dataset)
-BIAS_OUTPUT_CARRIERS: list[str] = []
+
 
 
 def create_variation_configs(
     bias_weights, subsidy_scenarios=None
 ) -> list[tuple[str, Path]]:
     """Write one config file per (bias weight x subsidy scenario) combination.
-
-    Copies the dataset's ``config.json`` and overwrites the
-    ``investment_decisions`` plugin entry: a ``None`` weight creates a baseline
-    config with the profitability bias disabled, a numeric weight enables the
-    bias with that ``bias_weight`` and restricts it to the output carriers in
-    ``BIAS_OUTPUT_CARRIERS``. Each combination additionally writes the scenario's
-    ``subsidies`` list into the plugin config (see the plugin's subsidy format:
-    a list of ``{technology, node, type, amount, carrier?}`` entries, with
-    ``type`` one of ``capex`` / ``fixed_opex`` / ``variable_opex`` /
-    ``remuneration``). The variants are written as ``config_<label>.json`` into
-    ``DATASET_ROOT`` (same directory as the base config, so relative paths
-    inside the config resolve identically).
 
     Args:
         bias_weights: iterable of weights, e.g. ``[None, 0.25, 0.5, 1.0]``.
@@ -551,8 +564,7 @@ def create_variation_configs(
     for weight in bias_weights:
         bias_label = "no_bias" if weight is None else f"bias_weight_{weight}"
         for sub_label, subsidies in subsidy_scenarios:
-            # only append the subsidy tag when subsidies are actually applied,
-            # so a plain bias sweep keeps its original folder/plot names
+            #subsidy label
             label = (
                 bias_label
                 if sub_label in (None, "", "no_subsidy") or not subsidies
@@ -570,9 +582,7 @@ def create_variation_configs(
                 plugin_cfg["bias_output_carriers"] = list(BIAS_OUTPUT_CARRIERS)
 
             plugin_cfg["subsidies"] = copy.deepcopy(list(subsidies))
-            # carry the scenario label so the profitability CSV can be named the
-            # same way as the capacity-additions plot (e.g. ``hp_capex_DE``);
-            # only set when subsidies are actually applied.
+           
             if subsidies and sub_label not in (None, "", "no_subsidy"):
                 plugin_cfg["subsidy_label"] = sub_label
 
@@ -584,29 +594,6 @@ def create_variation_configs(
     return variations
 
 
-# bias weights to run in one program start; ``None`` = total_cost
-#BIAS_WEIGHTS: list[float | None] = [None, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0, 50, 100]
-BIAS_WEIGHTS: list[float | None] = [None, 0.2, 0.5, 0.8, 5.0]
-#BIAS_WEIGHTS: list[float | None] = [None]
-
-
-# Subsidy scenarios to run in one program start. 
-#   - "capex"         : one-time relief in the decision year [money/GW added]
-#   - "fixed_opex"    : annual lump-sum relief [money/GW added], discounted
-#   - "variable_opex" : per-MWh relief [money/MWh] on the reference-carrier flow
-#   - "remuneration"  : fixed feed-in price [money/MWh] for an output "carrier" (requires the extra key "carrier")
-# The full sweep is the cross product BIAS_WEIGHTS x SUBSIDY_SCENARIOS. Keep the default first entry to include the no-subsidy baseline.
-SUBSIDY_SCENARIOS: list[tuple[str, list[dict]]] = [
-    ("no_subsidy", []),
-    # DE Einspeiseverguetung PV: 11 ct/kWh = 0.11 MEUR/GWh
-    #("pv_remun_DE", [ {"technology": "photovoltaics", "node": "DE", "type": "remuneration", "amount": 0.11, "carrier": "electricity"}, ]),
-    # DE Heat-Pump CAPEX-Foerderung: 350 MEUR/GW 
-    #("hp_capex_DE", [ {"technology": "heat_pump", "node": "DE", "type": "capex", "amount": 350}, ]),
-    # DE CO2-Steuer Gas: 65 EUR statt 100 EUR -> 35 EUR Differenz = 0.00710412 MEUR/GWh 
-    #("gasboiler_co2_DE", [ {"technology": "natural_gas_boiler", "node": "DE", "type": "variable_opex", "amount": 0.00710412}, ]),
-    # IT Kapazitaetsmarkt: 70 MEUR/GW fuer Neukapazitaet
-    #("gasturbine_capmarket_IT", [ {"technology": "natural_gas_turbine", "node": "IT", "type": "fixed_opex", "amount": 70}, ]),
-]
 
 
 
