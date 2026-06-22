@@ -1,6 +1,8 @@
 # User defined
 ##############
 investment_plugin_output.txt
+visualize.py
+rebuild_run_summary.py
 /.idea
 /.vscode
 /data/*/
@@ -18,7 +20,6 @@ zen_garden_env/
 *test.py
 /tests/testcases/test_1k__operation/*
 /tests/testcases/test_7b__operation/*
-/investment_plugin_output.txt
 
 # pytest monitor
 .pymon
