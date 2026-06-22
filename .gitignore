@@ -3,6 +3,7 @@
 investment_plugin_output.txt
 visualize.py
 rebuild_run_summary.py
+.claude/
 /.idea
 /.vscode
 /data/*/
